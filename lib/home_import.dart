@@ -4,6 +4,7 @@ import 'package:flutter_application_1/shared.dart';
 import 'package:flutter_application_1/database.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:excel/excel.dart' hide Border;
 
 class HomeImportScreen extends StatelessWidget {
   const HomeImportScreen({super.key});
@@ -44,6 +45,53 @@ class HomeImportScreen extends StatelessWidget {
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(errorSnack('Failed to import CSV: $e'));
+      }
+    }
+  }
+
+  Future<void> _importXlsx(BuildContext context) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx'],
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.single;
+      final bytes = file.bytes ?? await File(file.path!).readAsBytes();
+      final excel = Excel.decodeBytes(bytes);
+      if (excel.sheets.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(errorSnack('Excel file is empty.'));
+        }
+        return;
+      }
+      final sheet = excel.sheets.values.first;
+      final rows = sheet.rows;
+      if (rows.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(errorSnack('Excel sheet is empty.'));
+        }
+        return;
+      }
+      final headers = rows.first.map((cell) => cell?.value?.toString().trim() ?? '').toList();
+      final columns = headers.map((h) => SchemaColumn(name: h)).toList();
+      final dataRows = rows.skip(1).map((row) {
+        final map = <String, dynamic>{};
+        for (var i = 0; i < headers.length && i < row.length; i++) {
+          map[headers[i]] = row[i]?.value;
+        }
+        return map;
+      }).toList();
+      if (context.mounted) {
+        Navigator.pushNamed(context, SchemaRoute.schema, arguments: {
+          'columns': columns,
+          'fileName': file.name.replaceAll('.xlsx', ''),
+          'records': dataRows,
+        });
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(errorSnack('Failed to import Excel: $e'));
       }
     }
   }
@@ -117,6 +165,13 @@ class HomeImportScreen extends StatelessWidget {
                           subtitle: 'Upload a CSV file and map its columns',
                           onTap: () => _importCsv(context),
                         )),
+                        const SizedBox(width: 16),
+                        Expanded(child: _ActionCard(
+                          icon: Icons.table_chart_outlined,
+                          title: 'Import Excel',
+                          subtitle: 'Upload an .xlsx file and map its columns',
+                          onTap: () => _importXlsx(context),
+                        )),
                       ],
                     )
                   else
@@ -134,6 +189,13 @@ class HomeImportScreen extends StatelessWidget {
                           title: 'Import CSV',
                           subtitle: 'Upload a CSV file and map its columns',
                           onTap: () => _importCsv(context),
+                        ),
+                        const SizedBox(height: 12),
+                        _ActionCard(
+                          icon: Icons.table_chart_outlined,
+                          title: 'Import Excel',
+                          subtitle: 'Upload an .xlsx file and map its columns',
+                          onTap: () => _importXlsx(context),
                         ),
                       ],
                     ),

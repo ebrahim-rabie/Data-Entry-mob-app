@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:excel/excel.dart' hide Border;
 import 'package:flutter_application_1/shared.dart';
 import 'package:flutter_application_1/database.dart';
 
@@ -230,35 +231,101 @@ class _FinalScreenState extends State<FinalScreen> {
   }
 
   Future<void> _onExport() async {
+    final format = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: Text('Export as…', style: GoogleFonts.inter(color: AppColors.textPrimary, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: () => Navigator.pop(ctx, 'csv'),
+                icon: const Icon(Icons.description_outlined),
+                label: Text('CSV', style: GoogleFonts.inter(fontSize: 15)),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.textPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: () => Navigator.pop(ctx, 'xlsx'),
+                icon: const Icon(Icons.table_chart_outlined),
+                label: Text('Excel (.xlsx)', style: GoogleFonts.inter(fontSize: 15)),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.textPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Cancel', style: GoogleFonts.inter(color: AppColors.textSecondary)),
+          ),
+        ],
+      ),
+    );
+    if (format == null || !mounted) return;
+
     final flds = widget.columns;
-    final buf = StringBuffer(flds.map((f) => '"${f.name}"').join(','));
-    buf.writeln();
-    for (final r in _filtered) {
-      buf.writeln(
-        flds
-            .map((f) {
+    try {
+      if (format == 'csv') {
+        final buf = StringBuffer(flds.map((f) => '"${f.name}"').join(','));
+        buf.writeln();
+        for (final r in _filtered) {
+          buf.writeln(
+            flds.map((f) {
               final v = r.data[f.name];
               final s = v?.toString() ?? '';
               return '"${s.replaceAll('"', '""')}"';
-            })
-            .join(','),
-      );
-    }
-    try {
-      final path = await FilePicker.platform.saveFile(
-        dialogTitle: 'Export CSV',
-        fileName: '${widget.fileName}_export.csv',
-        type: FileType.custom,
-        allowedExtensions: ['csv'],
-        bytes: Uint8List.fromList(utf8.encode(buf.toString())),
-      );
-      if (path != null && mounted) {
-        _showSnackBar('Exported successfully');
+            }).join(','),
+          );
+        }
+        final path = await FilePicker.platform.saveFile(
+          dialogTitle: 'Export CSV',
+          fileName: '${widget.fileName}_export.csv',
+          type: FileType.custom,
+          allowedExtensions: ['csv'],
+          bytes: Uint8List.fromList(utf8.encode(buf.toString())),
+        );
+        if (path != null && mounted) _showSnackBar('Exported successfully');
+      } else {
+        final excel = Excel.createExcel();
+        final sheet = excel['Sheet1'];
+        for (var c = 0; c < flds.length; c++) {
+          sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).value = TextCellValue(flds[c].name);
+        }
+        for (var r = 0; r < _filtered.length; r++) {
+          for (var c = 0; c < flds.length; c++) {
+            final v = _filtered[r].data[flds[c].name];
+            final s = v?.toString() ?? '';
+            sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r + 1)).value = TextCellValue(s);
+          }
+        }
+        final data = excel.encode();
+        if (data == null) throw Exception('Failed to encode Excel file');
+        final path = await FilePicker.platform.saveFile(
+          dialogTitle: 'Export Excel',
+          fileName: '${widget.fileName}_export.xlsx',
+          type: FileType.custom,
+          allowedExtensions: ['xlsx'],
+          bytes: Uint8List.fromList(data),
+        );
+        if (path != null && mounted) _showSnackBar('Exported successfully');
       }
     } catch (e) {
-      if (mounted) {
-        _showSnackBar('Export failed: $e', isError: true);
-      }
+      if (mounted) _showSnackBar('Export failed: $e', isError: true);
     }
   }
 
