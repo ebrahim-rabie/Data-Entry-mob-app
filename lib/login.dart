@@ -12,6 +12,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   bool _obscure = true;
+  bool _loading = false;
   static final _emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
 
   @override
@@ -21,9 +22,25 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _login() {
-    if (_formKey.currentState!.validate()) {
-      Navigator.pushReplacementNamed(context, SchemaRoute.home);
+  Future<void> _login() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _loading = true);
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailCtrl.text.trim(),
+        password: _passCtrl.text,
+      );
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, SchemaRoute.home);
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          errorSnack(authErrorMessage(e, isRegister: false)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -98,7 +115,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         SizedBox(
                           width: double.infinity,
                           child: ScaleButton(
-                            onTap: _login,
+                            onTap: _loading ? null : _login,
                             child: ElevatedButton(
                               onPressed: null,
                               style: ElevatedButton.styleFrom(
@@ -109,13 +126,18 @@ class _LoginScreenState extends State<LoginScreen> {
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                                 textStyle: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
                               ),
-                              child: const Text('Sign in'),
+                              child: _loading
+                                  ? const SizedBox(
+                                      width: 20, height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                    )
+                                  : const Text('Sign in'),
                             ),
                           ),
                         ),
                         const SizedBox(height: 16),
                         TextButton(
-                          onPressed: () => Navigator.pushNamed(context, SchemaRoute.register),
+                          onPressed: _loading ? null : () => Navigator.pushNamed(context, SchemaRoute.register),
                           child: RichText(
                             text: TextSpan(
                               style: GoogleFonts.inter(fontSize: 13, color: AppColors.textSecondary),

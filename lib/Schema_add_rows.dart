@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_application_1/shared.dart';
+import 'package:flutter_application_1/database.dart';
 
 class SchemaAddRowsScreen extends StatefulWidget {
+  final String? projectId;
   final String fileName;
   final List<SchemaColumn> columns;
   final List<Map<String, dynamic>>? initialRecords;
 
   const SchemaAddRowsScreen({
     super.key,
+    this.projectId,
     required this.fileName,
     required this.columns,
     this.initialRecords,
@@ -20,10 +23,13 @@ class SchemaAddRowsScreen extends StatefulWidget {
 
 class _SchemaAddRowsScreenState extends State<SchemaAddRowsScreen> {
   final List<Map<String, dynamic>> _records = [];
+  late String _projectId;
+  bool _saving = false;
 
   @override
   void initState() {
     super.initState();
+    _projectId = widget.projectId ?? '';
     if (widget.initialRecords != null && widget.initialRecords!.isNotEmpty) {
       _records.addAll(widget.initialRecords!);
     } else {
@@ -53,7 +59,7 @@ class _SchemaAddRowsScreenState extends State<SchemaAddRowsScreen> {
     setState(() => _records[rowIndex][columnName] = value);
   }
 
-  void _continueToFinal() {
+  Future<void> _continueToFinal() async {
     for (int r = 0; r < _records.length; r++) {
       for (final col in widget.columns) {
         if (col.required) {
@@ -67,15 +73,32 @@ class _SchemaAddRowsScreenState extends State<SchemaAddRowsScreen> {
         }
       }
     }
-    Navigator.pushNamed(
-      context,
-      SchemaRoute.finalScreen,
-      arguments: {
-        'fileName': widget.fileName,
-        'columns': widget.columns,
-        'records': _records,
-      },
-    );
+    setState(() => _saving = true);
+    try {
+      if (_projectId.isEmpty) {
+        _projectId = await databaseService.createProject(widget.fileName, widget.columns);
+      }
+      for (final r in _records) {
+        await databaseService.addRecord(_projectId, Map<String, dynamic>.from(r));
+      }
+      if (mounted) {
+        Navigator.pushNamed(
+          context,
+          SchemaRoute.finalScreen,
+          arguments: {
+            'projectId': _projectId,
+            'fileName': widget.fileName,
+            'columns': widget.columns,
+          },
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(errorSnack('Failed to save: $e'));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -103,6 +126,7 @@ class _SchemaAddRowsScreenState extends State<SchemaAddRowsScreen> {
                   fileName: widget.fileName,
                   recordCount: _records.length,
                   onContinue: _continueToFinal,
+                  saving: _saving,
                 ),
                 const Divider(height: 1, color: AppColors.border),
                 Expanded(
@@ -197,12 +221,14 @@ class _SchemaAddRowsScreenState extends State<SchemaAddRowsScreen> {
 class _TopBar extends StatelessWidget {
   final String fileName;
   final int recordCount;
-  final VoidCallback onContinue;
+  final Future<void> Function() onContinue;
+  final bool saving;
 
   const _TopBar({
     required this.fileName,
     required this.recordCount,
     required this.onContinue,
+    this.saving = false,
   });
 
   @override
@@ -245,7 +271,7 @@ class _TopBar extends StatelessWidget {
                 SizedBox(
                   width: double.infinity,
                   child: ScaleButton(
-                    onTap: onContinue,
+                    onTap: saving ? null : onContinue,
                     child: ElevatedButton(
                       onPressed: null,
                       style: ElevatedButton.styleFrom(
@@ -261,7 +287,9 @@ class _TopBar extends StatelessWidget {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                      child: const Text('Continue to summary'),
+                      child: saving
+                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('Continue to summary'),
                     ),
                   ),
                 ),
@@ -290,7 +318,7 @@ class _TopBar extends StatelessWidget {
                 _recordPill(),
                 const SizedBox(width: 12),
                 ScaleButton(
-                  onTap: onContinue,
+                  onTap: saving ? null : onContinue,
                   child: ElevatedButton(
                     onPressed: null,
                     style: ElevatedButton.styleFrom(
@@ -309,7 +337,9 @@ class _TopBar extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    child: const Text('Continue to summary'),
+                    child: saving
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Continue to summary'),
                   ),
                 ),
               ],

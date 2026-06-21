@@ -1,21 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
-class GoogleFonts {
-  static TextStyle inter({
-    double? fontSize,
-    FontWeight? fontWeight,
-    Color? color,
-    double? letterSpacing,
-  }) {
-    return TextStyle(
-      fontFamily: 'Inter',
-      fontSize: fontSize,
-      fontWeight: fontWeight,
-      color: color,
-      letterSpacing: letterSpacing,
-    );
-  }
-}
+export 'package:google_fonts/google_fonts.dart' show GoogleFonts;
+export 'package:firebase_auth/firebase_auth.dart';
 
 bool isPhoneWidth(double width) => width < 600;
 bool isTabletWidth(double width) => width >= 600 && width < 1024;
@@ -96,6 +84,25 @@ class SchemaColumn {
     required:        required        ?? this.required,
     dropdownOptions: dropdownOptions ?? List.from(this.dropdownOptions),
   );
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'type': type.name,
+    'required': required,
+    'dropdownOptions': dropdownOptions,
+  };
+
+  factory SchemaColumn.fromJson(Map<String, dynamic> json) => SchemaColumn(
+    name: json['name'] as String? ?? '',
+    type: ColumnType.values.firstWhere(
+      (e) => e.name == json['type'],
+      orElse: () => ColumnType.text,
+    ),
+    required: json['required'] as bool? ?? true,
+    dropdownOptions: (json['dropdownOptions'] as List<dynamic>?)
+        ?.map((e) => e.toString())
+        .toList() ?? [],
+  );
 }
 
 SnackBar errorSnack(String msg) => SnackBar(
@@ -104,6 +111,28 @@ SnackBar errorSnack(String msg) => SnackBar(
   behavior: SnackBarBehavior.floating,
   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
 );
+
+String authErrorMessage(FirebaseAuthException e, {required bool isRegister}) {
+  switch (e.code) {
+    case 'configuration-not-found':
+      return 'Firebase Auth is not configured. Enable Email/Password sign-in in Firebase Console.';
+    case 'email-already-in-use':
+      return 'An account already exists for this email.';
+    case 'weak-password':
+      return 'Password should be at least 6 characters.';
+    case 'invalid-email':
+      return 'Enter a valid email address.';
+    case 'user-not-found':
+      return 'No account found for this email.';
+    case 'wrong-password':
+    case 'invalid-credential':
+      return 'Incorrect email or password.';
+    case 'network-request-failed':
+      return 'Network error. Check your internet connection and try again.';
+    default:
+      return e.message ?? (isRegister ? 'Registration failed.' : 'Sign in failed.');
+  }
+}
 
 LinearGradient primaryGradient = const LinearGradient(
   colors: [Color(0xFF6C63FF), Color(0xFF8B83FF)],
@@ -172,8 +201,6 @@ Route<dynamic> slideRoute(Widget page) => PageRouteBuilder(
   transitionDuration: const Duration(milliseconds: 300),
 );
 
-// ── Route names ──────────────────────────────────────────────────────────────
-
 class SchemaRoute {
   static const String login       = '/';
   static const String register    = '/register';
@@ -181,4 +208,52 @@ class SchemaRoute {
   static const String schema      = '/schema';
   static const String addRows     = '/add-rows';
   static const String finalScreen = '/final';
+}
+
+class ProjectData {
+  final String id;
+  final String fileName;
+  final List<SchemaColumn> columns;
+  final Timestamp createdAt;
+  final Timestamp updatedAt;
+
+  ProjectData({
+    required this.id,
+    required this.fileName,
+    required this.columns,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'fileName': fileName,
+    'columns': columns.map((c) => c.toJson()).toList(),
+    'createdAt': createdAt,
+    'updatedAt': updatedAt,
+  };
+
+  factory ProjectData.fromSnapshot(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    return ProjectData(
+      id: doc.id,
+      fileName: data['fileName'] as String? ?? 'Untitled',
+      columns: (data['columns'] as List<dynamic>?)
+          ?.map((e) => SchemaColumn.fromJson(e as Map<String, dynamic>))
+          .toList() ?? [],
+      createdAt: data['createdAt'] as Timestamp? ?? Timestamp.now(),
+      updatedAt: data['updatedAt'] as Timestamp? ?? Timestamp.now(),
+    );
+  }
+}
+
+class RecordData {
+  final String id;
+  final Map<String, dynamic> data;
+
+  RecordData({required this.id, required this.data});
+
+  factory RecordData.fromSnapshot(DocumentSnapshot doc) {
+    final d = doc.data() as Map<String, dynamic>? ?? {};
+    return RecordData(id: doc.id, data: Map<String, dynamic>.from(d));
+  }
 }

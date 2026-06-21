@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter_application_1/firebase_options.dart';
 import 'package:flutter_application_1/shared.dart';
+import 'package:flutter_application_1/database.dart';
 import 'package:flutter_application_1/login.dart';
 import 'package:flutter_application_1/register.dart';
-import 'package:flutter_application_1/Home__Import.dart';
-import 'package:flutter_application_1/Schema_add_rows.dart';
-import 'package:flutter_application_1/Final_screen.dart';
+import 'package:flutter_application_1/home_import.dart';
+import 'package:flutter_application_1/schema_add_rows.dart';
+import 'package:flutter_application_1/final_screen.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   runApp(const MyApp());
 }
 
@@ -24,7 +31,7 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
         useMaterial3: true,
       ),
-      initialRoute: SchemaRoute.login,
+      home: const AuthGate(),
       onGenerateRoute: _onGenerateRoute,
     );
   }
@@ -40,6 +47,7 @@ class MyApp extends StatelessWidget {
       case SchemaRoute.schema:
         final args = settings.arguments as Map<String, dynamic>?;
         return slideRoute(SchemaBuilderScreen(
+          projectId: args?['projectId'] as String?,
           importedColumns: args?['columns'] as List<SchemaColumn>?,
           importedFileName: args?['fileName'] as String?,
           importedRecords: args?['records'] as List<Map<String, dynamic>>?,
@@ -47,6 +55,7 @@ class MyApp extends StatelessWidget {
       case SchemaRoute.addRows:
         final args = settings.arguments as Map<String, dynamic>?;
         return slideRoute(SchemaAddRowsScreen(
+          projectId: args?['projectId'] as String?,
           fileName: args?['fileName'] as String? ?? 'Untitled',
           columns: args?['columns'] as List<SchemaColumn>? ?? [],
           initialRecords: args?['records'] as List<Map<String, dynamic>>?,
@@ -54,9 +63,9 @@ class MyApp extends StatelessWidget {
       case SchemaRoute.finalScreen:
         final args = settings.arguments as Map<String, dynamic>?;
         return slideRoute(FinalScreen(
+          projectId: args?['projectId'] as String? ?? '',
           fileName: args?['fileName'] as String? ?? 'Untitled',
           columns: args?['columns'] as List<SchemaColumn>? ?? [],
-          records: args?['records'] as List<Map<String, dynamic>>? ?? [],
         ));
       default:
         return slideRoute(const LoginScreen());
@@ -65,16 +74,44 @@ class MyApp extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  AUTH GATE — listens to Firebase auth state
+// ─────────────────────────────────────────────────────────────────────────────
+
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snapshot.hasData) {
+          return const HomeImportScreen();
+        }
+        return const LoginScreen();
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  SCREEN 1 — SCHEMA BUILDER
 // ─────────────────────────────────────────────────────────────────────────────
 
 class SchemaBuilderScreen extends StatefulWidget {
+  final String? projectId;
   final List<SchemaColumn>? importedColumns;
   final String?             importedFileName;
   final List<Map<String, dynamic>>? importedRecords;
 
   const SchemaBuilderScreen({
     super.key,
+    this.projectId,
     this.importedColumns,
     this.importedFileName,
     this.importedRecords,
@@ -89,10 +126,12 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
   late List<Map<String, dynamic>> _importedRecords;
   late TextEditingController _fileNameCtrl;
   bool _previewOpen = false;
+  String? _projectId;
 
   @override
   void initState() {
     super.initState();
+    _projectId = widget.projectId;
     _fileNameCtrl = TextEditingController(
       text: widget.importedFileName ?? 'Untitled file',
     );
@@ -131,7 +170,7 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
     });
   }
 
-  void _saveAndEnter() {
+  Future<void> _saveAndEnter() async {
     final emptyNames = _columns.any((c) => c.name.trim().isEmpty);
     if (emptyNames) {
       ScaffoldMessenger.of(context).showSnackBar(errorSnack(
@@ -149,15 +188,33 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
         return;
       }
     }
-    Navigator.pushNamed(
-      context,
-      SchemaRoute.addRows,
-      arguments: {
-        'fileName': _fileNameCtrl.text.trim().isEmpty ? 'Untitled' : _fileNameCtrl.text.trim(),
-        'columns': _columns,
-        if (_importedRecords.isNotEmpty) 'records': _importedRecords,
-      },
-    );
+    try {
+      final fileName = _fileNameCtrl.text.trim().isEmpty ? 'Untitled' : _fileNameCtrl.text.trim();
+      if (_projectId == null) {
+        _projectId = await databaseService.createProject(fileName, _columns);
+        if (_importedRecords.isNotEmpty) {
+          await databaseService.importRecords(_projectId!, _importedRecords);
+        }
+      } else {
+        await databaseService.updateSchema(_projectId!, _columns, fileName: fileName);
+      }
+      if (mounted) {
+        Navigator.pushNamed(
+          context,
+          SchemaRoute.addRows,
+          arguments: {
+            'projectId': _projectId,
+            'fileName': fileName,
+            'columns': _columns,
+            if (_importedRecords.isNotEmpty) 'records': _importedRecords,
+          },
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(errorSnack('Failed to save: $e'));
+      }
+    }
   }
 
   @override
@@ -238,7 +295,7 @@ class _TopBar extends StatelessWidget {
   final String breadcrumb;
   final VoidCallback onBack;
   final VoidCallback? onPreview;
-  final VoidCallback onSave;
+  final Future<void> Function() onSave;
 
   const _TopBar({
     required this.breadcrumb,
@@ -254,7 +311,7 @@ class _TopBar extends StatelessWidget {
         final isPhone = constraints.maxWidth < 900;
         final horizontalPadding = isPhone ? 8.0 : 16.0;
         final saveButton = ScaleButton(
-          onTap: onSave,
+          onTap: () => onSave(),
           child: ElevatedButton(
             onPressed: null,
             style: ElevatedButton.styleFrom(

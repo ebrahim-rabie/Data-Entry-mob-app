@@ -1,19 +1,20 @@
-import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_application_1/shared.dart';
+import 'package:flutter_application_1/database.dart';
 
 class FinalScreen extends StatefulWidget {
+  final String projectId;
   final String fileName;
   final List<SchemaColumn> columns;
-  final List<Map<String, dynamic>> records;
 
   const FinalScreen({
     super.key,
+    required this.projectId,
     required this.fileName,
     required this.columns,
-    required this.records,
   });
 
   @override
@@ -21,17 +22,16 @@ class FinalScreen extends StatefulWidget {
 }
 
 class _FinalScreenState extends State<FinalScreen> {
-  late List<Map<String, dynamic>> _records;
   final TextEditingController _searchCtrl = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
   String _searchQuery = '';
   final Map<String, String?> _filters = {};
-  final Set<int> _selectedIds = {};
+  final Set<String> _selectedIds = {};
+  List<RecordData> _allRecords = [];
 
   @override
   void initState() {
     super.initState();
-    _records = widget.records.map((r) => Map<String, dynamic>.from(r)).toList();
   }
 
   @override
@@ -46,22 +46,22 @@ class _FinalScreenState extends State<FinalScreen> {
       .map((c) => c.name)
       .toList();
 
-  List<Map<String, dynamic>> get _filtered {
+  List<RecordData> get _filtered {
     final q = _searchQuery.toLowerCase();
-    return _records.where((r) {
+    return _allRecords.where((r) {
       final matchSearch =
           q.isEmpty ||
-          r.values.any((v) => v?.toString().toLowerCase().contains(q) ?? false);
+          r.data.values.any((v) => v?.toString().toLowerCase().contains(q) ?? false);
       final matchFilters = _filterableKeys.every((k) {
         final filterVal = _filters[k];
-        return filterVal == null || r[k]?.toString() == filterVal;
+        return filterVal == null || r.data[k]?.toString() == filterVal;
       });
       return matchSearch && matchFilters;
     }).toList();
   }
 
   List<String> filterOptions(String key) =>
-      _records.map((r) => r[key]?.toString() ?? '').toSet().toList()..sort();
+      _allRecords.map((r) => r.data[key]?.toString() ?? '').toSet().toList()..sort();
 
   String? filterValue(String key) => _filters[key];
 
@@ -75,16 +75,16 @@ class _FinalScreenState extends State<FinalScreen> {
 
   bool get _allFilteredSelected =>
       _filtered.isNotEmpty &&
-      _filtered.every((r) => _selectedIds.contains(_records.indexOf(r)));
+      _filtered.every((r) => _selectedIds.contains(r.id));
 
   int get _selectedCount => _selectedIds.length;
 
-  void _toggleSelect(int index) {
+  void _toggleSelect(String id) {
     setState(() {
-      if (_selectedIds.contains(index)) {
-        _selectedIds.remove(index);
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
       } else {
-        _selectedIds.add(index);
+        _selectedIds.add(id);
       }
     });
   }
@@ -93,11 +93,11 @@ class _FinalScreenState extends State<FinalScreen> {
     setState(() {
       if (value == true) {
         for (final r in _filtered) {
-          _selectedIds.add(_records.indexOf(r));
+          _selectedIds.add(r.id);
         }
       } else {
         for (final r in _filtered) {
-          _selectedIds.remove(_records.indexOf(r));
+          _selectedIds.remove(r.id);
         }
       }
     });
@@ -134,45 +134,53 @@ class _FinalScreenState extends State<FinalScreen> {
       builder: (_) => _RecordDialog(columns: widget.columns),
     );
     if (result != null) {
-      setState(() => _records.add(result));
-      _showSnackBar('Record added');
+      try {
+        await databaseService.addRecord(widget.projectId, result);
+        _showSnackBar('Record added');
+      } catch (e) {
+        _showSnackBar('Failed to add record: $e', isError: true);
+      }
     }
   }
 
-  Future<void> _onEditRecord(int index) async {
+  Future<void> _onEditRecord(RecordData record) async {
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) =>
-          _RecordDialog(columns: widget.columns, existing: _records[index]),
+          _RecordDialog(columns: widget.columns, existing: record.data),
     );
     if (result != null) {
-      setState(() => _records[index] = result);
-      _showSnackBar('Record updated');
+      try {
+        await databaseService.updateRecord(widget.projectId, record.id, result);
+        _showSnackBar('Record updated');
+      } catch (e) {
+        _showSnackBar('Failed to update record: $e', isError: true);
+      }
     }
   }
 
-  Future<void> _onDeleteRecord(int index) async {
+  Future<void> _onDeleteRecord(String id) async {
     final confirmed = await _confirmDelete(1);
     if (!confirmed) return;
-    setState(() {
-      _records.removeAt(index);
-      _selectedIds.remove(index);
-    });
-    _showSnackBar('Record deleted');
+    try {
+      await databaseService.deleteRecord(widget.projectId, id);
+      _showSnackBar('Record deleted');
+    } catch (e) {
+      _showSnackBar('Failed to delete record: $e', isError: true);
+    }
   }
 
   Future<void> _onDeleteSelected() async {
     final count = _selectedCount;
     final confirmed = await _confirmDelete(count);
     if (!confirmed) return;
-    setState(() {
-      final sorted = _selectedIds.toList()..sort((a, b) => b.compareTo(a));
-      for (final i in sorted) {
-        _records.removeAt(i);
-      }
+    try {
+      await databaseService.deleteRecords(widget.projectId, _selectedIds.toList());
       _selectedIds.clear();
-    });
-    _showSnackBar('$count record${count == 1 ? '' : 's'} deleted');
+      _showSnackBar('$count record${count == 1 ? '' : 's'} deleted');
+    } catch (e) {
+      _showSnackBar('Failed to delete records: $e', isError: true);
+    }
   }
 
   Future<bool> _confirmDelete(int count) async {
@@ -229,24 +237,26 @@ class _FinalScreenState extends State<FinalScreen> {
       buf.writeln(
         flds
             .map((f) {
-              final v = r[f.name];
+              final v = r.data[f.name];
               final s = v?.toString() ?? '';
               return '"${s.replaceAll('"', '""')}"';
             })
             .join(','),
       );
     }
-    final path = await FilePicker.platform.saveFile(
-      dialogTitle: 'Export CSV',
-      fileName: '${widget.fileName}_export.csv',
-      type: FileType.custom,
-      allowedExtensions: ['csv'],
-    );
-    if (path != null && mounted) {
-      try {
-        await File(path).writeAsString(buf.toString());
+    try {
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: 'Export CSV',
+        fileName: '${widget.fileName}_export.csv',
+        type: FileType.custom,
+        allowedExtensions: ['csv'],
+        bytes: Uint8List.fromList(utf8.encode(buf.toString())),
+      );
+      if (path != null && mounted) {
         _showSnackBar('Exported successfully');
-      } catch (e) {
+      }
+    } catch (e) {
+      if (mounted) {
         _showSnackBar('Export failed: $e', isError: true);
       }
     }
@@ -272,14 +282,32 @@ class _FinalScreenState extends State<FinalScreen> {
       child: Scaffold(
         backgroundColor: AppColors.background,
         body: SafeArea(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildTopBar(),
-              if (_selectedIds.isNotEmpty) _buildSelectionBar(),
-              Expanded(child: _buildTableArea()),
-              _buildFooter(),
-            ],
+          child: StreamBuilder(
+            stream: databaseService.watchRecords(widget.projectId),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError) {
+                return Center(
+                  child: Text('Error: ${snapshot.error}',
+                      style: GoogleFonts.inter(color: AppColors.error)),
+                );
+              }
+              _allRecords = snapshot.data?.docs
+                  .map((d) => RecordData.fromSnapshot(d))
+                  .toList() ?? [];
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildTopBar(),
+                  if (_selectedIds.isNotEmpty) _buildSelectionBar(),
+                  Expanded(child: _buildTableArea()),
+                  _buildFooter(),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -317,7 +345,7 @@ class _FinalScreenState extends State<FinalScreen> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    _RecordCountBadge(count: _records.length),
+                    _RecordCountBadge(count: _allRecords.length),
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -383,7 +411,7 @@ class _FinalScreenState extends State<FinalScreen> {
                 ),
               ),
               const SizedBox(width: 10),
-              _RecordCountBadge(count: _records.length),
+              _RecordCountBadge(count: _allRecords.length),
               const SizedBox(width: 20),
               SizedBox(
                 width: 200,
@@ -561,14 +589,13 @@ class _FinalScreenState extends State<FinalScreen> {
                             const Divider(height: 1, color: AppColors.border),
                         itemBuilder: (_, i) {
                           final rec = _filtered[i];
-                          final realIndex = _records.indexOf(rec);
                           return _DataRow(
                             record: rec,
                             columns: widget.columns,
-                            selected: _selectedIds.contains(realIndex),
-                            onToggle: () => _toggleSelect(realIndex),
-                            onEdit: () => _onEditRecord(realIndex),
-                            onDelete: () => _onDeleteRecord(realIndex),
+                            selected: _selectedIds.contains(rec.id),
+                            onToggle: () => _toggleSelect(rec.id),
+                            onEdit: () => _onEditRecord(rec),
+                            onDelete: () => _onDeleteRecord(rec.id),
                           );
                         },
                       ),
@@ -591,7 +618,7 @@ class _FinalScreenState extends State<FinalScreen> {
               value: _allFilteredSelected,
               tristate:
                   _filtered.any(
-                    (r) => _selectedIds.contains(_records.indexOf(r)),
+                    (r) => _selectedIds.contains(r.id),
                   ) &&
                   !_allFilteredSelected,
               onChanged: _toggleSelectAll,
@@ -630,7 +657,7 @@ class _FinalScreenState extends State<FinalScreen> {
 
   Widget _buildFooter() {
     final count = _filtered.length;
-    final total = _records.length;
+    final total = _allRecords.length;
     return Container(
       color: AppColors.surface,
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
@@ -669,7 +696,7 @@ class _FinalScreenState extends State<FinalScreen> {
 // DATA ROW
 // ─────────────────────────────────────────────────────────────────────────────
 class _DataRow extends StatefulWidget {
-  final Map<String, dynamic> record;
+  final RecordData record;
   final List<SchemaColumn> columns;
   final bool selected;
   final VoidCallback onToggle;
@@ -737,8 +764,8 @@ class _DataRowState extends State<_DataRow> {
   }
 }
 
-Widget _buildCell(Map<String, dynamic> record, SchemaColumn col) {
-  final val = record[col.name]?.toString() ?? '';
+Widget _buildCell(RecordData record, SchemaColumn col) {
+  final val = record.data[col.name]?.toString() ?? '';
   if (col.type == ColumnType.dropdown && col.dropdownOptions.length <= 4) {
     Color bg, fg;
     switch (val) {

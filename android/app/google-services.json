@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "413811014873",
+    "project_id": "data-entry-mob-app",
+    "storage_bucket": "data-entry-mob-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:413811014873:android:0795e8c0f35b69962592c8",
+        "android_client_info": {
+          "package_name": "com.example.flutter_application_1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCpmj2Mh6j0BPtJEwDL1tyMyxv2Fca1jpU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
