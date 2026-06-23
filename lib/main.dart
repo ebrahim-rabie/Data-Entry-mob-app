@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_application_1/firebase_options.dart';
 import 'package:flutter_application_1/shared.dart';
 import 'package:flutter_application_1/database.dart';
@@ -9,11 +10,16 @@ import 'package:flutter_application_1/register.dart';
 import 'package:flutter_application_1/home_import.dart';
 import 'package:flutter_application_1/schema_add_rows.dart';
 import 'package:flutter_application_1/final_screen.dart';
+import 'package:flutter_application_1/onboarding.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
+  );
+  FirebaseFirestore.instance.settings = const Settings(
+    persistenceEnabled: true,
+    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
   );
   runApp(const MyApp());
 }
@@ -24,7 +30,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter App',
+      title: 'SmartEntry',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         textTheme: Theme.of(context).textTheme,
@@ -38,6 +44,8 @@ class MyApp extends StatelessWidget {
 
   Route<dynamic>? _onGenerateRoute(RouteSettings settings) {
     switch (settings.name) {
+      case SchemaRoute.onboarding:
+        return slideRoute(const OnboardingScreen());
       case SchemaRoute.login:
         return slideRoute(const LoginScreen());
       case SchemaRoute.register:
@@ -93,7 +101,7 @@ class AuthGate extends StatelessWidget {
         if (snapshot.hasData) {
           return const HomeImportScreen();
         }
-        return const LoginScreen();
+        return const OnboardingScreen();
       },
     );
   }
@@ -312,20 +320,22 @@ class _TopBar extends StatelessWidget {
         final horizontalPadding = isPhone ? 8.0 : 16.0;
         final saveButton = ScaleButton(
           onTap: () => onSave(),
-          child: ElevatedButton(
-            onPressed: null,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: AppColors.textInverse,
-              elevation: 0,
-              padding: EdgeInsets.symmetric(
-                horizontal: isPhone ? 14 : 18,
-                vertical: 10,
+          child: AbsorbPointer(
+            child: ElevatedButton(
+              onPressed: () {},
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.textInverse,
+                elevation: 0,
+                padding: EdgeInsets.symmetric(
+                  horizontal: isPhone ? 14 : 18,
+                  vertical: 10,
+                ),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                textStyle: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
               ),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              textStyle: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+              child: Text(isPhone ? 'Save' : 'Save & start entering'),
             ),
-            child: Text(isPhone ? 'Save' : 'Save & start entering'),
           ),
         );
         final previewButton = onPreview == null

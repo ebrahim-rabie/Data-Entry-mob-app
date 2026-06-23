@@ -31,7 +31,7 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passCtrl.text,
       );
       if (mounted) {
-        Navigator.pushReplacementNamed(context, SchemaRoute.home);
+        Navigator.popUntil(context, (route) => route.isFirst);
       }
     } on FirebaseAuthException catch (e) {
       if (mounted) {
@@ -70,15 +70,37 @@ class _LoginScreenState extends State<LoginScreen> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Container(
-                          padding: const EdgeInsets.all(16),
+                          padding: const EdgeInsets.all(8),
                           decoration: const BoxDecoration(
                             color: AppColors.primaryLight,
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(Icons.table_chart_outlined, size: 40, color: AppColors.primary),
+                          child: ClipOval(
+                            child: Image.asset(
+                              'assets/logo.png',
+                              width: 60,
+                              height: 60,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) => const Icon(
+                                Icons.table_chart_outlined,
+                                size: 40,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                          ),
                         ),
-                        const SizedBox(height: 24),
-                        Text('Welcome back', style: GoogleFonts.inter(fontSize: 24, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+                        const SizedBox(height: 20),
+                        Text(
+                          'SmartEntry',
+                          style: GoogleFonts.inter(
+                            fontSize: 28,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.primary,
+                            letterSpacing: -0.8,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Welcome back', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
                         const SizedBox(height: 4),
                         Text('Sign in to your account', style: GoogleFonts.inter(fontSize: 14, color: AppColors.textSecondary)),
                         const SizedBox(height: 32),
@@ -116,28 +138,37 @@ class _LoginScreenState extends State<LoginScreen> {
                           width: double.infinity,
                           child: ScaleButton(
                             onTap: _loading ? null : _login,
-                            child: ElevatedButton(
-                              onPressed: null,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.primary,
-                                foregroundColor: AppColors.textInverse,
-                                elevation: 0,
-                                padding: const EdgeInsets.symmetric(vertical: 14),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                textStyle: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
+                            child: AbsorbPointer(
+                              absorbing: !_loading,
+                              child: ElevatedButton(
+                                onPressed: _loading ? null : () {},
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: AppColors.textInverse,
+                                  elevation: 0,
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  textStyle: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
+                                ),
+                                child: _loading
+                                    ? const SizedBox(
+                                        width: 20, height: 20,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                      )
+                                    : const Text('Sign in'),
                               ),
-                              child: _loading
-                                  ? const SizedBox(
-                                      width: 20, height: 20,
-                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                    )
-                                  : const Text('Sign in'),
                             ),
                           ),
                         ),
                         const SizedBox(height: 16),
                         TextButton(
-                          onPressed: _loading ? null : () => Navigator.pushNamed(context, SchemaRoute.register),
+                          onPressed: _loading ? null : () {
+                            Navigator.pushNamedAndRemoveUntil(
+                              context,
+                              SchemaRoute.register,
+                              (route) => route.isFirst,
+                            );
+                          },
                           child: RichText(
                             text: TextSpan(
                               style: GoogleFonts.inter(fontSize: 13, color: AppColors.textSecondary),

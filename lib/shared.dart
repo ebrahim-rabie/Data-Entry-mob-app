@@ -202,7 +202,8 @@ Route<dynamic> slideRoute(Widget page) => PageRouteBuilder(
 );
 
 class SchemaRoute {
-  static const String login       = '/';
+  static const String onboarding  = '/onboarding';
+  static const String login       = '/login';
   static const String register    = '/register';
   static const String home        = '/home';
   static const String schema      = '/schema';
@@ -255,5 +256,69 @@ class RecordData {
   factory RecordData.fromSnapshot(DocumentSnapshot doc) {
     final d = doc.data() as Map<String, dynamic>? ?? {};
     return RecordData(id: doc.id, data: Map<String, dynamic>.from(d));
+  }
+}
+
+class ShimmerLoading extends StatefulWidget {
+  final double width;
+  final double height;
+  final double borderRadius;
+  const ShimmerLoading({
+    super.key,
+    required this.width,
+    required this.height,
+    this.borderRadius = 8,
+  });
+
+  @override
+  State<ShimmerLoading> createState() => _ShimmerLoadingState();
+}
+
+class _ShimmerLoadingState extends State<ShimmerLoading> with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, child) {
+        return Container(
+          width: widget.width,
+          height: widget.height,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(widget.borderRadius),
+            gradient: LinearGradient(
+              colors: [
+                AppColors.border.withValues(alpha: 0.6),
+                AppColors.border.withValues(alpha: 0.25),
+                AppColors.border.withValues(alpha: 0.6),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              stops: [
+                0.0,
+                _ctrl.value,
+                1.0,
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 }

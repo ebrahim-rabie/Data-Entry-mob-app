@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:excel/excel.dart' hide Border;
 import 'package:flutter_application_1/shared.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_application_1/database.dart';
 
 class FinalScreen extends StatefulWidget {
@@ -29,10 +30,22 @@ class _FinalScreenState extends State<FinalScreen> {
   final Map<String, String?> _filters = {};
   final Set<String> _selectedIds = {};
   List<RecordData> _allRecords = [];
+  int _currentPage = 1;
+  static const int _pageSize = 25;
+
+  final Set<String> _hiddenColumns = {};
+  String? _sortColumn;
+  bool _sortAscending = true;
+  bool _schemaUpdating = false;
+
+  late Stream<DocumentSnapshot<Map<String, dynamic>>> _projectStream;
+  late Stream<QuerySnapshot<Map<String, dynamic>>> _recordsStream;
 
   @override
   void initState() {
     super.initState();
+    _projectStream = databaseService.watchProject(widget.projectId);
+    _recordsStream = databaseService.watchRecords(widget.projectId);
   }
 
   @override
@@ -42,23 +55,52 @@ class _FinalScreenState extends State<FinalScreen> {
     super.dispose();
   }
 
-  List<String> get _filterableKeys => widget.columns
+  List<String> _filterableKeys(List<SchemaColumn> cols) => cols
       .where((c) => c.type == ColumnType.text || c.type == ColumnType.dropdown)
       .map((c) => c.name)
       .toList();
 
-  List<RecordData> get _filtered {
+  List<RecordData> _allFiltered(List<SchemaColumn> cols) {
     final q = _searchQuery.toLowerCase();
-    return _allRecords.where((r) {
+    final list = _allRecords.where((r) {
       final matchSearch =
           q.isEmpty ||
           r.data.values.any((v) => v?.toString().toLowerCase().contains(q) ?? false);
-      final matchFilters = _filterableKeys.every((k) {
+      final matchFilters = _filterableKeys(cols).every((k) {
         final filterVal = _filters[k];
         return filterVal == null || r.data[k]?.toString() == filterVal;
       });
       return matchSearch && matchFilters;
     }).toList();
+
+    if (_sortColumn != null) {
+      list.sort((a, b) {
+        final valA = a.data[_sortColumn];
+        final valB = b.data[_sortColumn];
+        if (valA == null && valB == null) return 0;
+        if (valA == null) return _sortAscending ? 1 : -1;
+        if (valB == null) return _sortAscending ? -1 : 1;
+
+        final numA = num.tryParse(valA.toString());
+        final numB = num.tryParse(valB.toString());
+        if (numA != null && numB != null) {
+          return _sortAscending ? numA.compareTo(numB) : numB.compareTo(numA);
+        }
+
+        return _sortAscending
+            ? valA.toString().toLowerCase().compareTo(valB.toString().toLowerCase())
+            : valB.toString().toLowerCase().compareTo(valA.toString().toLowerCase());
+      });
+    }
+    return list;
+  }
+
+  List<RecordData> _filtered(List<SchemaColumn> cols) {
+    final list = _allFiltered(cols);
+    final startIndex = (_currentPage - 1) * _pageSize;
+    if (startIndex >= list.length) return [];
+    final endIndex = startIndex + _pageSize;
+    return list.sublist(startIndex, endIndex > list.length ? list.length : endIndex);
   }
 
   List<String> filterOptions(String key) =>
@@ -67,16 +109,23 @@ class _FinalScreenState extends State<FinalScreen> {
   String? filterValue(String key) => _filters[key];
 
   void setSearch(String q) {
-    setState(() => _searchQuery = q);
+    setState(() {
+      _searchQuery = q;
+      _currentPage = 1;
+    });
   }
 
   void setFilter(String key, String? value) {
-    setState(() => _filters[key] = value);
+    setState(() {
+      _filters[key] = value;
+      _currentPage = 1;
+    });
   }
 
-  bool get _allFilteredSelected =>
-      _filtered.isNotEmpty &&
-      _filtered.every((r) => _selectedIds.contains(r.id));
+  bool _allFilteredSelected(List<SchemaColumn> cols) {
+    final list = _filtered(cols);
+    return list.isNotEmpty && list.every((r) => _selectedIds.contains(r.id));
+  }
 
   int get _selectedCount => _selectedIds.length;
 
@@ -90,14 +139,15 @@ class _FinalScreenState extends State<FinalScreen> {
     });
   }
 
-  void _toggleSelectAll(bool? value) {
+  void _toggleSelectAll(bool? value, List<SchemaColumn> cols) {
     setState(() {
+      final list = _filtered(cols);
       if (value == true) {
-        for (final r in _filtered) {
+        for (final r in list) {
           _selectedIds.add(r.id);
         }
       } else {
-        for (final r in _filtered) {
+        for (final r in list) {
           _selectedIds.remove(r.id);
         }
       }
@@ -123,16 +173,17 @@ class _FinalScreenState extends State<FinalScreen> {
           ],
         ),
         backgroundColor: isError ? AppColors.error : AppColors.success,
+        behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.all(16),
         duration: Duration(seconds: isError ? 5 : 3),
       ),
     );
   }
 
-  Future<void> _onAddRecord() async {
+  Future<void> _onAddRecord(List<SchemaColumn> cols) async {
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => _RecordDialog(columns: widget.columns),
+      builder: (_) => _RecordDialog(columns: cols),
     );
     if (result != null) {
       try {
@@ -144,11 +195,11 @@ class _FinalScreenState extends State<FinalScreen> {
     }
   }
 
-  Future<void> _onEditRecord(RecordData record) async {
+  Future<void> _onEditRecord(RecordData record, List<SchemaColumn> cols) async {
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) =>
-          _RecordDialog(columns: widget.columns, existing: record.data),
+          _RecordDialog(columns: cols, existing: record.data),
     );
     if (result != null) {
       try {
@@ -230,7 +281,7 @@ class _FinalScreenState extends State<FinalScreen> {
         false;
   }
 
-  Future<void> _onExport() async {
+  Future<void> _onExport(List<SchemaColumn> cols) async {
     final format = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -278,12 +329,12 @@ class _FinalScreenState extends State<FinalScreen> {
     );
     if (format == null || !mounted) return;
 
-    final flds = widget.columns;
+    final flds = cols;
     try {
       if (format == 'csv') {
         final buf = StringBuffer(flds.map((f) => '"${f.name}"').join(','));
         buf.writeln();
-        for (final r in _filtered) {
+        for (final r in _allFiltered(cols)) {
           buf.writeln(
             flds.map((f) {
               final v = r.data[f.name];
@@ -306,9 +357,10 @@ class _FinalScreenState extends State<FinalScreen> {
         for (var c = 0; c < flds.length; c++) {
           sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).value = TextCellValue(flds[c].name);
         }
-        for (var r = 0; r < _filtered.length; r++) {
+        final filteredRecords = _allFiltered(cols);
+        for (var r = 0; r < filteredRecords.length; r++) {
           for (var c = 0; c < flds.length; c++) {
-            final v = _filtered[r].data[flds[c].name];
+            final v = filteredRecords[r].data[flds[c].name];
             final s = v?.toString() ?? '';
             sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: r + 1)).value = TextCellValue(s);
           }
@@ -329,6 +381,103 @@ class _FinalScreenState extends State<FinalScreen> {
     }
   }
 
+  Future<void> _onAddColumn(List<SchemaColumn> activeColumns) async {
+    final result = await showDialog<SchemaColumn>(
+      context: context,
+      builder: (_) => _ColumnDialog(existingColumns: activeColumns),
+    );
+    if (result != null) {
+      setState(() => _schemaUpdating = true);
+      try {
+        final newCols = [...activeColumns, result];
+        await databaseService.updateSchema(widget.projectId, newCols);
+        _showSnackBar('Column "${result.name}" added');
+      } catch (e) {
+        _showSnackBar('Failed to add column: $e', isError: true);
+      } finally {
+        setState(() => _schemaUpdating = false);
+      }
+    }
+  }
+
+  Future<void> _onEditColumn(SchemaColumn column, List<SchemaColumn> activeColumns) async {
+    final result = await showDialog<SchemaColumn>(
+      context: context,
+      builder: (_) => _ColumnDialog(existingColumns: activeColumns, editingColumn: column),
+    );
+    if (result != null) {
+      setState(() => _schemaUpdating = true);
+      try {
+        final oldName = column.name;
+        final newName = result.name;
+
+        final newCols = activeColumns.map((c) => c.name == oldName ? result : c).toList();
+        await databaseService.updateSchema(widget.projectId, newCols);
+
+        if (oldName != newName) {
+          await databaseService.renameColumnKey(widget.projectId, oldName, newName);
+          if (_filters.containsKey(oldName)) {
+            final filterVal = _filters.remove(oldName);
+            if (filterVal != null) {
+              _filters[newName] = filterVal;
+            }
+          }
+          if (_hiddenColumns.contains(oldName)) {
+            _hiddenColumns.remove(oldName);
+            _hiddenColumns.add(newName);
+          }
+          if (_sortColumn == oldName) {
+            _sortColumn = newName;
+          }
+        }
+        _showSnackBar('Column "${result.name}" updated');
+      } catch (e) {
+        _showSnackBar('Failed to update column: $e', isError: true);
+      } finally {
+        setState(() => _schemaUpdating = false);
+      }
+    }
+  }
+
+  Future<void> _onDeleteColumn(SchemaColumn column, List<SchemaColumn> activeColumns) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        title: Text('Delete column "${column.name}"?', style: GoogleFonts.inter(color: AppColors.textPrimary, fontWeight: FontWeight.w600)),
+        content: Text('This will permanently delete this column and all its values from existing records.', style: GoogleFonts.inter(color: AppColors.textSecondary)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('Cancel', style: GoogleFonts.inter(color: AppColors.textSecondary))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error, foregroundColor: AppColors.textInverse, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('Delete', style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      setState(() => _schemaUpdating = true);
+      try {
+        final newCols = activeColumns.where((c) => c.name != column.name).toList();
+        await databaseService.updateSchema(widget.projectId, newCols);
+        await databaseService.deleteColumnKey(widget.projectId, column.name);
+
+        _filters.remove(column.name);
+        _hiddenColumns.remove(column.name);
+        if (_sortColumn == column.name) {
+          _sortColumn = null;
+        }
+
+        _showSnackBar('Column "${column.name}" deleted');
+      } catch (e) {
+        _showSnackBar('Failed to delete column: $e', isError: true);
+      } finally {
+        setState(() => _schemaUpdating = false);
+      }
+    }
+  }
+
   void _handleKey(KeyEvent e) {
     if (e is KeyDownEvent) {
       final isCtrlF =
@@ -341,6 +490,295 @@ class _FinalScreenState extends State<FinalScreen> {
     }
   }
 
+  Widget _buildLoadingSkeleton() {
+    final mediaQuery = MediaQuery.of(context);
+    final compact = mediaQuery.size.width < 600;
+    final isShort = mediaQuery.size.height < 500;
+
+    if (isShort) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            color: AppColors.surface,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: const BoxDecoration(
+                        color: AppColors.primaryLight,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.arrow_back_rounded, color: AppColors.primary, size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    const ShimmerLoading(width: 100, height: 20),
+                    const SizedBox(width: 8),
+                    const ShimmerLoading(width: 40, height: 16, borderRadius: 10),
+                    const Spacer(),
+                    const ShimmerLoading(width: 120, height: 28, borderRadius: 8),
+                    const SizedBox(width: 6),
+                    const ShimmerLoading(width: 32, height: 32, borderRadius: 6),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                const SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      ShimmerLoading(width: 90, height: 28, borderRadius: 8),
+                      SizedBox(width: 6),
+                      ShimmerLoading(width: 90, height: 28, borderRadius: 8),
+                      SizedBox(width: 6),
+                      ShimmerLoading(width: 70, height: 28, borderRadius: 8),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: (widget.columns.length * 130.0 + 100).clamp(600, 1400),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Row(
+                          children: [
+                            const SizedBox(width: 40, child: Icon(Icons.check_box_outline_blank, color: AppColors.border, size: 20)),
+                            ...widget.columns.map((c) => Expanded(
+                              flex: c.type == ColumnType.number ? 1 : 2,
+                              child: Text(
+                                c.name.toUpperCase(),
+                                style: GoogleFonts.inter(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.textMuted,
+                                  letterSpacing: 0.6,
+                                ),
+                              ),
+                            )),
+                            const SizedBox(width: 60),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1, color: AppColors.border),
+                      Expanded(
+                        child: ListView.separated(
+                          itemCount: 8,
+                          separatorBuilder: (_, _) => const Divider(height: 1, color: AppColors.border),
+                          itemBuilder: (_, index) => Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            child: Row(
+                              children: [
+                                const SizedBox(width: 40, child: Icon(Icons.check_box_outline_blank, color: AppColors.border, size: 20)),
+                                ...widget.columns.map((c) => Expanded(
+                                  flex: c.type == ColumnType.number ? 1 : 2,
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: ShimmerLoading(
+                                      width: c.type == ColumnType.number ? 60 : 100,
+                                      height: 16,
+                                    ),
+                                  ),
+                                )),
+                                const SizedBox(width: 60, child: Row(
+                                  children: [
+                                    Icon(Icons.edit_outlined, size: 16, color: AppColors.border),
+                                    SizedBox(width: 8),
+                                    Icon(Icons.delete_outline, size: 16, color: AppColors.border),
+                                  ],
+                                )),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Container(
+            color: AppColors.surface,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: const Row(
+              children: [
+                ShimmerLoading(width: 150, height: 16),
+                Spacer(),
+                ShimmerLoading(width: 28, height: 28, borderRadius: 6),
+                SizedBox(width: 6),
+                ShimmerLoading(width: 28, height: 28, borderRadius: 6),
+                SizedBox(width: 6),
+                ShimmerLoading(width: 28, height: 28, borderRadius: 6),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+
+    final List<Widget> headerChildren = [
+      Container(
+        width: 36,
+        height: 36,
+        decoration: const BoxDecoration(
+          color: AppColors.primaryLight,
+          shape: BoxShape.circle,
+        ),
+        child: const Icon(Icons.arrow_back_rounded, color: AppColors.primary, size: 20),
+      ),
+      const SizedBox(width: 12),
+      const ShimmerLoading(width: 120, height: 24),
+      const SizedBox(width: 8),
+      const ShimmerLoading(width: 50, height: 20, borderRadius: 10),
+    ];
+
+    if (!compact) {
+      headerChildren.addAll([
+        const Spacer(),
+        const ShimmerLoading(width: 120, height: 36, borderRadius: 8),
+        const SizedBox(width: 10),
+        const ShimmerLoading(width: 90, height: 36, borderRadius: 8),
+      ]);
+    } else {
+      headerChildren.addAll([
+        const Spacer(),
+        const ShimmerLoading(width: 36, height: 36, borderRadius: 8),
+      ]);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          color: AppColors.surface,
+          padding: EdgeInsets.symmetric(
+            horizontal: isShort ? 16 : 24,
+            vertical: isShort ? 8 : 14,
+          ),
+          child: Row(children: headerChildren),
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: (widget.columns.length * 130.0 + 100).clamp(600, 1400),
+              child: Container(
+                margin: EdgeInsets.symmetric(
+                  horizontal: isShort ? 16 : 20,
+                  vertical: isShort ? 4 : 20,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: isShort ? 8 : 12,
+                      ),
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 40, child: Icon(Icons.check_box_outline_blank, color: AppColors.border, size: 20)),
+                          ...widget.columns.map((c) => Expanded(
+                            flex: c.type == ColumnType.number ? 1 : 2,
+                            child: Text(
+                              c.name.toUpperCase(),
+                              style: GoogleFonts.inter(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textMuted,
+                                letterSpacing: 0.6,
+                              ),
+                            ),
+                          )),
+                          const SizedBox(width: 60),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1, color: AppColors.border),
+                    Expanded(
+                      child: ListView.separated(
+                        itemCount: 8,
+                        separatorBuilder: (_, _) => const Divider(height: 1, color: AppColors.border),
+                        itemBuilder: (_, index) => Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: isShort ? 8 : 14,
+                          ),
+                          child: Row(
+                            children: [
+                              const SizedBox(width: 40, child: Icon(Icons.check_box_outline_blank, color: AppColors.border, size: 20)),
+                              ...widget.columns.map((c) => Expanded(
+                                flex: c.type == ColumnType.number ? 1 : 2,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: ShimmerLoading(
+                                    width: c.type == ColumnType.number ? 60 : 100,
+                                    height: 16,
+                                  ),
+                                ),
+                              )),
+                              const SizedBox(width: 60, child: Row(
+                                children: [
+                                  Icon(Icons.edit_outlined, size: 16, color: AppColors.border),
+                                  SizedBox(width: 8),
+                                  Icon(Icons.delete_outline, size: 16, color: AppColors.border),
+                                ],
+                              )),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Container(
+          color: AppColors.surface,
+          padding: EdgeInsets.symmetric(
+            horizontal: isShort ? 16 : 24,
+            vertical: isShort ? 6 : 12,
+          ),
+          child: Row(
+            children: [
+              const ShimmerLoading(width: 200, height: 16),
+              const Spacer(),
+              const ShimmerLoading(width: 32, height: 32, borderRadius: 6),
+              const SizedBox(width: 6),
+              const ShimmerLoading(width: 32, height: 32, borderRadius: 6),
+              const SizedBox(width: 6),
+              const ShimmerLoading(width: 32, height: 32, borderRadius: 6),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return KeyboardListener(
@@ -349,46 +787,239 @@ class _FinalScreenState extends State<FinalScreen> {
       child: Scaffold(
         backgroundColor: AppColors.background,
         body: SafeArea(
-          child: StreamBuilder(
-            stream: databaseService.watchRecords(widget.projectId),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.hasError) {
-                return Center(
-                  child: Text('Error: ${snapshot.error}',
-                      style: GoogleFonts.inter(color: AppColors.error)),
-                );
-              }
-              _allRecords = snapshot.data?.docs
-                  .map((d) => RecordData.fromSnapshot(d))
-                  .toList() ?? [];
+          child: Stack(
+            children: [
+              StreamBuilder(
+                stream: _projectStream,
+                builder: (context, projectSnapshot) {
+                  if (projectSnapshot.connectionState == ConnectionState.waiting) {
+                    return _buildLoadingSkeleton();
+                  }
+                  if (projectSnapshot.hasError) {
+                    return Center(
+                      child: Text('Error: ${projectSnapshot.error}',
+                          style: GoogleFonts.inter(color: AppColors.error)),
+                    );
+                  }
+                  final projectDoc = projectSnapshot.data;
+                  if (projectDoc == null || !projectDoc.exists) {
+                    return const Center(child: Text('Project not found.'));
+                  }
+                  final projectData = ProjectData.fromSnapshot(projectDoc);
+                  final activeColumns = projectData.columns;
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildTopBar(),
-                  if (_selectedIds.isNotEmpty) _buildSelectionBar(),
-                  Expanded(child: _buildTableArea()),
-                  _buildFooter(),
-                ],
-              );
-            },
+                  return StreamBuilder(
+                    stream: _recordsStream,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return _buildLoadingSkeleton();
+                      }
+                      if (snapshot.hasError) {
+                        return Center(
+                          child: Text('Error: ${snapshot.error}',
+                              style: GoogleFonts.inter(color: AppColors.error)),
+                        );
+                      }
+                      _allRecords = snapshot.data?.docs
+                          .map((d) => RecordData.fromSnapshot(d))
+                          .toList() ?? [];
+
+                      final totalFiltered = _allFiltered(activeColumns).length;
+                      final maxPage = (totalFiltered / _pageSize).ceil();
+                      if (_currentPage > maxPage && maxPage > 0) {
+                        _currentPage = maxPage;
+                      } else if (maxPage == 0) {
+                        _currentPage = 1;
+                      }
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildTopBar(activeColumns),
+                          if (_selectedIds.isNotEmpty) _buildSelectionBar(activeColumns),
+                          Expanded(child: _buildTableArea(activeColumns)),
+                          _buildFooter(activeColumns),
+                        ],
+                      );
+                    },
+                  );
+                },
+              ),
+              if (_schemaUpdating)
+                Container(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  child: Center(
+                    child: Card(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const CircularProgressIndicator(strokeWidth: 3),
+                            const SizedBox(width: 20),
+                            Text(
+                              'Syncing database schema...',
+                              style: GoogleFonts.inter(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildTopBar() {
+  Widget _buildTopBar(List<SchemaColumn> cols) {
+    final mediaQuery = MediaQuery.of(context);
+    final isShort = mediaQuery.size.height < 500;
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+      padding: EdgeInsets.symmetric(
+        horizontal: isShort ? 16 : 24,
+        vertical: isShort ? 6 : 14,
+      ),
       child: LayoutBuilder(
         builder: (ctx, constraints) {
           final compact = constraints.maxWidth < 860;
+          
+          Widget buildVisibilityMenu() => PopupMenuButton<String>(
+                icon: const Icon(Icons.view_column_rounded, color: AppColors.primary, size: 20),
+                tooltip: 'Show/Hide Columns',
+                offset: const Offset(0, 40),
+                itemBuilder: (context) => cols.map((c) {
+                  final isVisible = !_hiddenColumns.contains(c.name);
+                  return CheckedPopupMenuItem(
+                    value: c.name,
+                    checked: isVisible,
+                    child: Text(c.name, style: GoogleFonts.inter(fontSize: 13)),
+                  );
+                }).toList(),
+                onSelected: (colName) {
+                  setState(() {
+                    if (_hiddenColumns.contains(colName)) {
+                      _hiddenColumns.remove(colName);
+                    } else {
+                      if (_hiddenColumns.length < cols.length - 1) {
+                        _hiddenColumns.add(colName);
+                      } else {
+                        _showSnackBar('At least one column must be visible', isError: true);
+                      }
+                    }
+                  });
+                },
+              );
+
           if (compact) {
+            final filterableCols = cols
+                .where((c) => c.type == ColumnType.text || c.type == ColumnType.dropdown)
+                .toList();
+
+            if (isShort) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      _IconBtn(
+                        icon: Icons.arrow_back_rounded,
+                        tooltip: 'Back',
+                        onTap: () => Navigator.pop(context),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          widget.fileName,
+                          style: GoogleFonts.inter(
+                            color: AppColors.textPrimary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -0.3,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      _RecordCountBadge(count: _allRecords.length),
+                      const SizedBox(width: 6),
+                      SizedBox(
+                        width: 130,
+                        height: 32,
+                        child: TextField(
+                          controller: _searchCtrl,
+                          focusNode: _searchFocus,
+                          onChanged: setSearch,
+                          style: GoogleFonts.inter(fontSize: 12),
+                          decoration: InputDecoration(
+                            hintText: 'Search…',
+                            hintStyle: GoogleFonts.inter(
+                              color: AppColors.textMuted,
+                              fontSize: 12,
+                            ),
+                            prefixIcon: const Icon(
+                              Icons.search_rounded,
+                              color: AppColors.textMuted,
+                              size: 14,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 6,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      buildVisibilityMenu(),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        _OutlineBtn(
+                          label: 'Add record',
+                          icon: Icons.add_rounded,
+                          onTap: () => _onAddRecord(cols),
+                        ),
+                        const SizedBox(width: 6),
+                        _OutlineBtn(
+                          label: 'Add column',
+                          icon: Icons.add_chart_rounded,
+                          onTap: () => _onAddColumn(cols),
+                        ),
+                        const SizedBox(width: 6),
+                        _PrimaryBtn(
+                          label: 'Export',
+                          icon: Icons.download_rounded,
+                          onTap: () => _onExport(cols),
+                        ),
+                        if (filterableCols.isNotEmpty) ...[
+                          const SizedBox(width: 10),
+                          Container(
+                            width: 1,
+                            height: 20,
+                            color: AppColors.border,
+                          ),
+                          const SizedBox(width: 10),
+                          ..._buildFilterDropdowns(cols),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            }
+
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -413,12 +1044,15 @@ class _FinalScreenState extends State<FinalScreen> {
                       ),
                     ),
                     _RecordCountBadge(count: _allRecords.length),
+                    const SizedBox(width: 4),
+                    buildVisibilityMenu(),
                   ],
                 ),
-                const SizedBox(height: 10),
+                SizedBox(height: isShort ? 4 : 10),
                 Wrap(
                   spacing: 8,
-                  runSpacing: 8,
+                  runSpacing: isShort ? 4 : 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     SizedBox(
                       width: 180,
@@ -444,19 +1078,32 @@ class _FinalScreenState extends State<FinalScreen> {
                         ),
                       ),
                     ),
-                    ..._buildFilterDropdowns(),
                     _OutlineBtn(
                       label: 'Add record',
                       icon: Icons.add_rounded,
-                      onTap: _onAddRecord,
+                      onTap: () => _onAddRecord(cols),
+                    ),
+                    _OutlineBtn(
+                      label: 'Add column',
+                      icon: Icons.add_chart_rounded,
+                      onTap: () => _onAddColumn(cols),
                     ),
                     _PrimaryBtn(
                       label: 'Export',
                       icon: Icons.download_rounded,
-                      onTap: _onExport,
+                      onTap: () => _onExport(cols),
                     ),
                   ],
                 ),
+                if (filterableCols.isNotEmpty) ...[
+                  SizedBox(height: isShort ? 4 : 10),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: _buildFilterDropdowns(cols),
+                    ),
+                  ),
+                ],
               ],
             );
           }
@@ -479,7 +1126,9 @@ class _FinalScreenState extends State<FinalScreen> {
               ),
               const SizedBox(width: 10),
               _RecordCountBadge(count: _allRecords.length),
-              const SizedBox(width: 20),
+              const SizedBox(width: 10),
+              buildVisibilityMenu(),
+              const SizedBox(width: 10),
               SizedBox(
                 width: 200,
                 child: TextField(
@@ -505,18 +1154,32 @@ class _FinalScreenState extends State<FinalScreen> {
                 ),
               ),
               const SizedBox(width: 10),
-              ..._buildFilterDropdowns(),
+              Flexible(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: _buildFilterDropdowns(cols),
+                  ),
+                ),
+              ),
               const Spacer(),
+              const SizedBox(width: 10),
               _OutlineBtn(
                 label: 'Add record',
                 icon: Icons.add_rounded,
-                onTap: _onAddRecord,
+                onTap: () => _onAddRecord(cols),
+              ),
+              const SizedBox(width: 10),
+              _OutlineBtn(
+                label: 'Add column',
+                icon: Icons.add_chart_rounded,
+                onTap: () => _onAddColumn(cols),
               ),
               const SizedBox(width: 10),
               _PrimaryBtn(
                 label: 'Export',
                 icon: Icons.download_rounded,
-                onTap: _onExport,
+                onTap: () => _onExport(cols),
               ),
             ],
           );
@@ -525,8 +1188,8 @@ class _FinalScreenState extends State<FinalScreen> {
     );
   }
 
-  List<Widget> _buildFilterDropdowns() {
-    final filterable = widget.columns
+  List<Widget> _buildFilterDropdowns(List<SchemaColumn> cols) {
+    final filterable = cols
         .where(
           (c) => c.type == ColumnType.text || c.type == ColumnType.dropdown,
         )
@@ -547,14 +1210,22 @@ class _FinalScreenState extends State<FinalScreen> {
     return widgets;
   }
 
-  Widget _buildSelectionBar() {
+  Widget _buildSelectionBar(List<SchemaColumn> cols) {
+    final mediaQuery = MediaQuery.of(context);
+    final compact = mediaQuery.size.width < 600;
+
     return Container(
       color: AppColors.primaryLight,
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 12 : 24,
+        vertical: 10,
+      ),
       child: Row(
         children: [
           Text(
-            '$_selectedCount record${_selectedCount > 1 ? 's' : ''} selected',
+            compact
+                ? '$_selectedCount selected'
+                : '$_selectedCount record${_selectedCount > 1 ? 's' : ''} selected',
             style: GoogleFonts.inter(
               color: AppColors.primary,
               fontWeight: FontWeight.w600,
@@ -566,15 +1237,16 @@ class _FinalScreenState extends State<FinalScreen> {
             onPressed: _cancelSelection,
             style: TextButton.styleFrom(
               foregroundColor: AppColors.textSecondary,
+              padding: compact ? const EdgeInsets.symmetric(horizontal: 8) : null,
             ),
             child: Text('Cancel', style: GoogleFonts.inter(fontSize: 13)),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: compact ? 4 : 10),
           ElevatedButton.icon(
             onPressed: _onDeleteSelected,
             icon: const Icon(Icons.delete_outline_rounded, size: 14),
             label: Text(
-              'Delete selected',
+              compact ? 'Delete' : 'Delete selected',
               style: GoogleFonts.inter(
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
@@ -586,7 +1258,10 @@ class _FinalScreenState extends State<FinalScreen> {
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(8),
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              padding: EdgeInsets.symmetric(
+                horizontal: compact ? 10 : 14,
+                vertical: 8,
+              ),
               elevation: 0,
             ),
           ),
@@ -595,13 +1270,20 @@ class _FinalScreenState extends State<FinalScreen> {
     );
   }
 
-  Widget _buildTableArea() {
+  Widget _buildTableArea(List<SchemaColumn> cols) {
+    final visibleCols = cols.where((c) => !_hiddenColumns.contains(c.name)).toList();
+    final list = _filtered(cols);
+    final mediaQuery = MediaQuery.of(context);
+    final isShort = mediaQuery.size.height < 500;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SizedBox(
-        width: (widget.columns.length * 130.0 + 100).clamp(600, 1400),
+        width: (visibleCols.length * 130.0 + 100).clamp(600, 1400),
         child: Container(
-          margin: const EdgeInsets.all(20),
+          margin: EdgeInsets.symmetric(
+            horizontal: isShort ? 16 : 20,
+            vertical: isShort ? 0 : 20,
+          ),
           decoration: BoxDecoration(
             color: AppColors.surface,
             borderRadius: BorderRadius.circular(12),
@@ -609,10 +1291,10 @@ class _FinalScreenState extends State<FinalScreen> {
           ),
           child: Column(
             children: [
-              _buildTableHeader(),
+              _buildTableHeader(cols),
               const Divider(height: 1, color: AppColors.border),
               Expanded(
-                child: _filtered.isEmpty
+                child: list.isEmpty
                     ? Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -651,17 +1333,17 @@ class _FinalScreenState extends State<FinalScreen> {
                         ),
                       )
                     : ListView.separated(
-                        itemCount: _filtered.length,
+                        itemCount: list.length,
                         separatorBuilder: (_, _) =>
                             const Divider(height: 1, color: AppColors.border),
                         itemBuilder: (_, i) {
-                          final rec = _filtered[i];
+                          final rec = list[i];
                           return _DataRow(
                             record: rec,
-                            columns: widget.columns,
+                            columns: visibleCols,
                             selected: _selectedIds.contains(rec.id),
                             onToggle: () => _toggleSelect(rec.id),
-                            onEdit: () => _onEditRecord(rec),
+                            onEdit: () => _onEditRecord(rec, cols),
                             onDelete: () => _onDeleteRecord(rec.id),
                           );
                         },
@@ -674,34 +1356,135 @@ class _FinalScreenState extends State<FinalScreen> {
     );
   }
 
-  Widget _buildTableHeader() {
+  Widget _buildTableHeader(List<SchemaColumn> cols) {
+    final visibleCols = cols.where((c) => !_hiddenColumns.contains(c.name)).toList();
+    final mediaQuery = MediaQuery.of(context);
+    final isShort = mediaQuery.size.height < 500;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: isShort ? 4 : 12,
+      ),
       child: Row(
         children: [
           SizedBox(
             width: 40,
             child: Checkbox(
-              value: _allFilteredSelected,
+              value: _allFilteredSelected(cols),
               tristate:
-                  _filtered.any(
+                  _filtered(cols).any(
                     (r) => _selectedIds.contains(r.id),
                   ) &&
-                  !_allFilteredSelected,
-              onChanged: _toggleSelectAll,
+                  !_allFilteredSelected(cols),
+              onChanged: (v) => _toggleSelectAll(v, cols),
             ),
           ),
-          ...widget.columns.map(
+          ...visibleCols.map(
             (c) => Expanded(
               flex: c.type == ColumnType.number ? 1 : 2,
-              child: Text(
-                c.name.toUpperCase(),
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textMuted,
-                  letterSpacing: 0.6,
+              child: PopupMenuButton<String>(
+                tooltip: 'Column options',
+                offset: const Offset(0, 30),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        c.name.toUpperCase(),
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: _sortColumn == c.name ? AppColors.primary : AppColors.textMuted,
+                          letterSpacing: 0.6,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    if (_sortColumn == c.name)
+                      Icon(
+                        _sortAscending ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+                        size: 12,
+                        color: AppColors.primary,
+                      )
+                    else
+                      const Icon(Icons.arrow_drop_down_rounded, size: 14, color: AppColors.textMuted),
+                  ],
                 ),
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'sort_asc',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.arrow_upward_rounded, size: 16, color: AppColors.textSecondary),
+                        const SizedBox(width: 8),
+                        Text('Sort Ascending', style: GoogleFonts.inter(fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'sort_desc',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.arrow_downward_rounded, size: 16, color: AppColors.textSecondary),
+                        const SizedBox(width: 8),
+                        Text('Sort Descending', style: GoogleFonts.inter(fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: 'edit',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.edit_outlined, size: 16, color: AppColors.textSecondary),
+                        const SizedBox(width: 8),
+                        Text('Edit Column', style: GoogleFonts.inter(fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'hide',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.visibility_off_outlined, size: 16, color: AppColors.textSecondary),
+                        const SizedBox(width: 8),
+                        Text('Hide Column', style: GoogleFonts.inter(fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.delete_outline_rounded, size: 16, color: AppColors.error),
+                        const SizedBox(width: 8),
+                        Text('Delete Column', style: GoogleFonts.inter(fontSize: 13, color: AppColors.error)),
+                      ],
+                    ),
+                  ),
+                ],
+                onSelected: (action) {
+                  if (action == 'sort_asc') {
+                    setState(() {
+                      _sortColumn = c.name;
+                      _sortAscending = true;
+                    });
+                  } else if (action == 'sort_desc') {
+                    setState(() {
+                      _sortColumn = c.name;
+                      _sortAscending = false;
+                    });
+                  } else if (action == 'edit') {
+                    _onEditColumn(c, cols);
+                  } else if (action == 'hide') {
+                    setState(() {
+                      _hiddenColumns.add(c.name);
+                    });
+                  } else if (action == 'delete') {
+                    _onDeleteColumn(c, cols);
+                  }
+                },
               ),
             ),
           ),
@@ -722,37 +1505,61 @@ class _FinalScreenState extends State<FinalScreen> {
     );
   }
 
-  Widget _buildFooter() {
-    final count = _filtered.length;
-    final total = _allRecords.length;
+  Widget _buildFooter(List<SchemaColumn> cols) {
+    final allFiltered = _allFiltered(cols);
+    final total = allFiltered.length;
+    final totalRecords = _allRecords.length;
+    final startIndex = total == 0 ? 0 : (_currentPage - 1) * _pageSize + 1;
+    final endIndex = (_currentPage * _pageSize) > total ? total : (_currentPage * _pageSize);
+    final totalPages = (total / _pageSize).ceil();
+    final canPrev = _currentPage > 1;
+    final canNext = _currentPage < totalPages;
+    final mediaQuery = MediaQuery.of(context);
+    final compact = mediaQuery.size.width < 600;
+    final isShort = mediaQuery.size.height < 500;
+
     return Container(
       color: AppColors.surface,
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      padding: EdgeInsets.symmetric(
+        horizontal: isShort ? 16 : 24,
+        vertical: isShort ? 4 : 12,
+      ),
       child: Row(
         children: [
-          Text(
-            'Showing 1\u2013$count of $total records',
-            style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 13),
-          ),
-          const Spacer(),
-          _PageNavBtn(icon: Icons.chevron_left_rounded, onPressed: null),
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: AppColors.primary,
-              borderRadius: BorderRadius.circular(6),
-            ),
+          Expanded(
             child: Text(
-              '1',
-              style: GoogleFonts.inter(
-                color: AppColors.textInverse,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+              '${startIndex}–${endIndex} / $total records${total != totalRecords ? ' (filtered from $totalRecords)' : ''}',
+              style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 13),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (totalPages > 1) ...[
+            const SizedBox(width: 12),
+            _PageNavBtn(
+              icon: Icons.chevron_left_rounded,
+              onPressed: canPrev ? () => setState(() => _currentPage--) : null,
+            ),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.primary,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                '$_currentPage',
+                style: GoogleFonts.inter(
+                  color: AppColors.textInverse,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
-          ),
-          _PageNavBtn(icon: Icons.chevron_right_rounded, onPressed: null),
+            _PageNavBtn(
+              icon: Icons.chevron_right_rounded,
+              onPressed: canNext ? () => setState(() => _currentPage++) : null,
+            ),
+          ],
         ],
       ),
     );
@@ -788,6 +1595,8 @@ class _DataRowState extends State<_DataRow> {
 
   @override
   Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final isShort = mediaQuery.size.height < 500;
     return MouseRegion(
       onEnter: (_) => setState(() => _hov = true),
       onExit: (_) => setState(() => _hov = false),
@@ -800,7 +1609,10 @@ class _DataRowState extends State<_DataRow> {
               : _hov
               ? AppColors.primaryLight.withValues(alpha: 0.2)
               : Colors.transparent,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding: EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: isShort ? 6 : 14,
+          ),
           child: Row(
             children: [
               SizedBox(
@@ -832,83 +1644,97 @@ class _DataRowState extends State<_DataRow> {
 }
 
 Widget _buildCell(RecordData record, SchemaColumn col) {
-  final val = record.data[col.name]?.toString() ?? '';
-  if (col.type == ColumnType.dropdown && col.dropdownOptions.length <= 4) {
-    Color bg, fg;
-    switch (val) {
-      case 'New':
-        bg = AppColors.successLight;
-        fg = AppColors.success;
-      case 'Good':
-        bg = AppColors.infoBadgeLight;
-        fg = AppColors.infoBadge;
-      case 'Fair':
-        bg = AppColors.warningLight;
-        fg = AppColors.warning;
-      default:
-        bg = AppColors.border.withValues(alpha: 0.3);
-        fg = AppColors.textSecondary;
-    }
-    return FittedBox(
-      fit: BoxFit.scaleDown,
-      alignment: Alignment.centerLeft,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Text(
-          val,
-          style: TextStyle(
-            color: fg,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
+  try {
+    final rawVal = record.data[col.name];
+    final val = rawVal?.toString() ?? '';
+
+    if (col.type == ColumnType.dropdown && col.dropdownOptions.length <= 4) {
+      Color bg, fg;
+      switch (val) {
+        case 'New':
+          bg = AppColors.successLight;
+          fg = AppColors.success;
+        case 'Good':
+          bg = AppColors.infoBadgeLight;
+          fg = AppColors.infoBadge;
+        case 'Fair':
+          bg = AppColors.warningLight;
+          fg = AppColors.warning;
+        default:
+          bg = AppColors.border.withValues(alpha: 0.3);
+          fg = AppColors.textSecondary;
+      }
+      return FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            val,
+            style: TextStyle(
+              color: fg,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
-      ),
-    );
-  }
-  if (val.isEmpty && col.type != ColumnType.boolean) {
+      );
+    }
+    if (val.isEmpty && col.type != ColumnType.boolean) {
+      return Text(
+        '\u2014',
+        style: GoogleFonts.inter(
+          fontSize: 14,
+          color: AppColors.textMuted,
+        ),
+      );
+    }
+    if (col.type == ColumnType.boolean) {
+      final isTrue = rawVal == true ||
+          val.toLowerCase() == 'yes' ||
+          val.toLowerCase() == 'true' ||
+          val == '1';
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isTrue ? Icons.check_circle : Icons.cancel_outlined,
+            size: 16,
+            color: isTrue ? AppColors.success : AppColors.textMuted,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            isTrue ? 'Yes' : 'No',
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ],
+      );
+    }
     return Text(
-      '\u2014',
+      val,
       style: GoogleFonts.inter(
         fontSize: 14,
-        color: AppColors.textMuted,
+        fontWeight: FontWeight.w500,
+        color: AppColors.textPrimary,
+      ),
+    );
+  } catch (e) {
+    return Text(
+      'Error',
+      style: GoogleFonts.inter(
+        fontSize: 14,
+        color: AppColors.error,
       ),
     );
   }
-  if (col.type == ColumnType.boolean) {
-    final isTrue =
-        val.toLowerCase() == 'yes' || val.toLowerCase() == 'true' || val == '1';
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          isTrue ? Icons.check_circle : Icons.cancel_outlined,
-          size: 16,
-          color: isTrue ? AppColors.success : AppColors.textMuted,
-        ),
-        const SizedBox(width: 4),
-        Text(
-          isTrue ? 'Yes' : 'No',
-          style: GoogleFonts.inter(
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-            color: AppColors.textPrimary,
-          ),
-        ),
-      ],
-    );
-  }
-  return Text(
-    val,
-    style: GoogleFonts.inter(
-      fontSize: 14,
-      fontWeight: FontWeight.w500,
-      color: AppColors.textPrimary,
-    ),
-  );
 }
 
 Widget _iconRow({
@@ -1114,12 +1940,16 @@ class _RecordDialogState extends State<_RecordDialog> {
   Widget _buildField(SchemaColumn c) {
     if (c.type == ColumnType.dropdown) {
       return DropdownButtonFormField<String>(
+        isExpanded: true,
         initialValue:
             _dropdownValues[c.name] ??
             (c.dropdownOptions.isNotEmpty ? c.dropdownOptions.first : ''),
         decoration: InputDecoration(labelText: c.name),
         items: (c.dropdownOptions.isNotEmpty ? c.dropdownOptions : [''])
-            .map((opt) => DropdownMenuItem(value: opt, child: Text(opt)))
+            .map((opt) => DropdownMenuItem(
+                  value: opt,
+                  child: Text(opt, overflow: TextOverflow.ellipsis),
+                ))
             .toList(),
         onChanged: (v) => setState(() => _dropdownValues[c.name] = v ?? ''),
         validator: c.required
@@ -1129,12 +1959,16 @@ class _RecordDialogState extends State<_RecordDialog> {
     }
     if (c.type == ColumnType.boolean) {
       return DropdownButtonFormField<String>(
+        isExpanded: true,
         initialValue: _dropdownValues[c.name] ?? 'Yes',
         decoration: InputDecoration(labelText: c.name),
         items: [
           'Yes',
           'No',
-        ].map((opt) => DropdownMenuItem(value: opt, child: Text(opt))).toList(),
+        ].map((opt) => DropdownMenuItem(
+              value: opt,
+              child: Text(opt, overflow: TextOverflow.ellipsis),
+            )).toList(),
         onChanged: (v) => setState(() => _dropdownValues[c.name] = v ?? 'Yes'),
         validator: c.required
             ? (v) => (v == null || v.isEmpty) ? 'Required' : null
@@ -1142,6 +1976,40 @@ class _RecordDialogState extends State<_RecordDialog> {
       );
     }
     final ctrl = _ctrls[c.name]!;
+    if (c.type == ColumnType.date) {
+      return TextFormField(
+        controller: ctrl,
+        readOnly: true,
+        decoration: InputDecoration(
+          labelText: c.name,
+          suffixIcon: const Icon(Icons.calendar_today_outlined, size: 16),
+        ),
+        onTap: () async {
+          final picked = await showDatePicker(
+            context: context,
+            initialDate: DateTime.now(),
+            firstDate: DateTime(1900),
+            lastDate: DateTime(2100),
+            builder: (ctx, child) => Theme(
+              data: Theme.of(ctx).copyWith(
+                colorScheme: const ColorScheme.light(
+                  primary: AppColors.primary,
+                ),
+              ),
+              child: child!,
+            ),
+          );
+          if (picked != null) {
+            ctrl.text = '${picked.day.toString().padLeft(2, '0')} / '
+                '${picked.month.toString().padLeft(2, '0')} / '
+                '${picked.year}';
+          }
+        },
+        validator: c.required
+            ? (v) => (v == null || v.trim().isEmpty) ? 'Required' : null
+            : null,
+      );
+    }
     return TextFormField(
       controller: ctrl,
       keyboardType: c.type == ColumnType.number
@@ -1194,34 +2062,47 @@ class _DropdownFilter<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String?>(
-          value: value as String?,
-          hint: Text(
-            hint,
-            style: GoogleFonts.inter(
-              color: AppColors.textSecondary,
-              fontSize: 14,
+    return SizedBox(
+      width: 150,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          border: Border.all(color: AppColors.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<String?>(
+            isExpanded: true,
+            value: value as String?,
+            hint: Text(
+              hint,
+              style: GoogleFonts.inter(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
+            style: GoogleFonts.inter(color: AppColors.textPrimary, fontSize: 14),
+            icon: const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: AppColors.textSecondary,
+              size: 18,
+            ),
+            onChanged: (v) => onChanged(v as T?),
+            items: [
+              DropdownMenuItem(
+                value: null,
+                child: Text(hint, overflow: TextOverflow.ellipsis),
+              ),
+              ...items.map(
+                (s) => DropdownMenuItem(
+                  value: s,
+                  child: Text(s, overflow: TextOverflow.ellipsis),
+                ),
+              ),
+            ],
           ),
-          style: GoogleFonts.inter(color: AppColors.textPrimary, fontSize: 14),
-          icon: const Icon(
-            Icons.keyboard_arrow_down_rounded,
-            color: AppColors.textSecondary,
-            size: 18,
-          ),
-          onChanged: (v) => onChanged(v as T?),
-          items: [
-            DropdownMenuItem(value: null, child: Text(hint)),
-            ...items.map((s) => DropdownMenuItem(value: s, child: Text(s))),
-          ],
         ),
       ),
     );
@@ -1490,6 +2371,7 @@ class _PageNavBtnState extends State<_PageNavBtn> {
         onTapDown: enabled ? (_) => setState(() => _press = true) : null,
         onTapUp: enabled ? (_) => setState(() => _press = false) : null,
         onTapCancel: () => setState(() => _press = false),
+        onTap: widget.onPressed,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOutCubic,
@@ -1519,6 +2401,198 @@ class _PageNavBtnState extends State<_PageNavBtn> {
                 : _hov
                 ? AppColors.primary
                 : AppColors.textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ColumnDialog extends StatefulWidget {
+  final List<SchemaColumn> existingColumns;
+  final SchemaColumn? editingColumn;
+
+  const _ColumnDialog({
+    required this.existingColumns,
+    this.editingColumn,
+  });
+
+  @override
+  State<_ColumnDialog> createState() => _ColumnDialogState();
+}
+
+class _ColumnDialogState extends State<_ColumnDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late TextEditingController _nameCtrl;
+  late ColumnType _type;
+  late TextEditingController _optionsCtrl;
+  late bool _required;
+
+  bool get _isEditing => widget.editingColumn != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.editingColumn?.name ?? '');
+    _type = widget.editingColumn?.type ?? ColumnType.text;
+    _optionsCtrl = TextEditingController(
+      text: widget.editingColumn?.dropdownOptions.join(', ') ?? '',
+    );
+    _required = widget.editingColumn?.required ?? false;
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _optionsCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        width: 400,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _isEditing ? 'Edit Column' : 'Add Column',
+                  style: GoogleFonts.inter(
+                    color: AppColors.textPrimary,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextFormField(
+                          controller: _nameCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'Column Name',
+                            hintText: 'e.g. Price, Category',
+                          ),
+                          style: GoogleFonts.inter(fontSize: 14),
+                          validator: (v) {
+                            if (v == null || v.trim().isEmpty) return 'Required';
+                            final name = v.trim();
+                            final isDuplicate = widget.existingColumns.any((c) =>
+                                c.name.toLowerCase() == name.toLowerCase() &&
+                                (!_isEditing || widget.editingColumn!.name.toLowerCase() != name.toLowerCase()));
+                            if (isDuplicate) return 'Column name already exists';
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 16),
+                        DropdownButtonFormField<ColumnType>(
+                          isExpanded: true,
+                          initialValue: _type,
+                          decoration: const InputDecoration(labelText: 'Column Type'),
+                          items: ColumnType.values.map((t) {
+                            String label = t.name;
+                            if (t == ColumnType.boolean) label = 'Yes/No (Boolean)';
+                            return DropdownMenuItem(
+                              value: t,
+                              child: Text(label[0].toUpperCase() + label.substring(1)),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            if (val != null) {
+                              setState(() => _type = val);
+                            }
+                          },
+                        ),
+                        if (_type == ColumnType.dropdown) ...[
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _optionsCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'Dropdown Options',
+                              hintText: 'Option 1, Option 2, Option 3',
+                              helperText: 'Separate options with commas',
+                            ),
+                            style: GoogleFonts.inter(fontSize: 14),
+                            validator: (v) {
+                              if (_type == ColumnType.dropdown) {
+                                if (v == null || v.trim().isEmpty) return 'Required';
+                                final opts = v.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+                                if (opts.isEmpty) return 'Enter at least one option';
+                              }
+                              return null;
+                            },
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        CheckboxListTile(
+                          value: _required,
+                          title: Text(
+                            'Required field',
+                            style: GoogleFonts.inter(fontSize: 14, color: AppColors.textPrimary),
+                          ),
+                          contentPadding: EdgeInsets.zero,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          onChanged: (val) => setState(() => _required = val ?? false),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text(
+                        'Cancel',
+                        style: GoogleFonts.inter(color: AppColors.textSecondary),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: AppColors.textInverse,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      onPressed: () {
+                        if (_formKey.currentState!.validate()) {
+                          final name = _nameCtrl.text.trim();
+                          final opts = _type == ColumnType.dropdown
+                              ? _optionsCtrl.text
+                                  .split(',')
+                                  .map((s) => s.trim())
+                                  .where((s) => s.isNotEmpty)
+                                  .toList()
+                              : <String>[];
+                          final newCol = SchemaColumn(
+                            name: name,
+                            type: _type,
+                            required: _required,
+                            dropdownOptions: opts,
+                          );
+                          Navigator.pop(context, newCol);
+                        }
+                      },
+                      child: Text(_isEditing ? 'Save' : 'Add'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),

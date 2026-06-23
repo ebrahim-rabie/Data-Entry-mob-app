@@ -185,22 +185,24 @@ class _SchemaAddRowsScreenState extends State<SchemaAddRowsScreen> {
                     width: double.infinity,
                     child: ScaleButton(
                       onTap: _addBlankRow,
-                      child: OutlinedButton.icon(
-                        onPressed: null,
-                        icon: const Icon(Icons.add, size: 16),
-                        label: Text(
-                          'Add row',
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
+                      child: AbsorbPointer(
+                        child: OutlinedButton.icon(
+                          onPressed: () {},
+                          icon: const Icon(Icons.add, size: 16),
+                          label: Text(
+                            'Add row',
+                            style: GoogleFonts.inter(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.primary,
-                          side: const BorderSide(color: AppColors.primary),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppColors.primary,
+                            side: const BorderSide(color: AppColors.primary),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
                           ),
                         ),
                       ),
@@ -272,24 +274,27 @@ class _TopBar extends StatelessWidget {
                   width: double.infinity,
                   child: ScaleButton(
                     onTap: saving ? null : onContinue,
-                    child: ElevatedButton(
-                      onPressed: null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: AppColors.textInverse,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+                    child: AbsorbPointer(
+                      absorbing: !saving,
+                      child: ElevatedButton(
+                        onPressed: saving ? null : () {},
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: AppColors.textInverse,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          textStyle: GoogleFonts.inter(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                        textStyle: GoogleFonts.inter(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        child: saving
+                            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('Continue to summary'),
                       ),
-                      child: saving
-                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Text('Continue to summary'),
                     ),
                   ),
                 ),
@@ -319,27 +324,30 @@ class _TopBar extends StatelessWidget {
                 const SizedBox(width: 12),
                 ScaleButton(
                   onTap: saving ? null : onContinue,
-                  child: ElevatedButton(
-                    onPressed: null,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: AppColors.textInverse,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 18,
-                        vertical: 10,
+                  child: AbsorbPointer(
+                    absorbing: !saving,
+                    child: ElevatedButton(
+                      onPressed: saving ? null : () {},
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: AppColors.textInverse,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 10,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        textStyle: GoogleFonts.inter(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      textStyle: GoogleFonts.inter(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
+                      child: saving
+                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('Continue to summary'),
                     ),
-                    child: saving
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Text('Continue to summary'),
                   ),
                 ),
               ],
@@ -498,10 +506,24 @@ class _CardView extends StatelessWidget {
             ...columns.map(
               (col) => Padding(
                 padding: const EdgeInsets.only(bottom: 12),
-                child: _TableCell(
-                  column: col,
-                  value: records[i][col.name],
-                  onChanged: (v) => onUpdate(i, col.name, v),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      col.name + (col.required ? ' *' : ''),
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    _TableCell(
+                      column: col,
+                      value: records[i][col.name],
+                      onChanged: (v) => onUpdate(i, col.name, v),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -581,6 +603,7 @@ class _TableCellState extends State<_TableCell> {
         return TextFormField(
           controller: _ctrl,
           onChanged: widget.onChanged,
+          textInputAction: TextInputAction.next,
           style: GoogleFonts.inter(fontSize: 13, color: AppColors.textPrimary),
           decoration: _decoration('Enter text'),
         );
@@ -593,6 +616,7 @@ class _TableCellState extends State<_TableCell> {
             FilteringTextInputFormatter.allow(RegExp(r'[\d.]')),
           ],
           onChanged: (v) => widget.onChanged(v),
+          textInputAction: TextInputAction.next,
           style: GoogleFonts.inter(fontSize: 13, color: AppColors.textPrimary),
           decoration: _decoration('Enter number'),
         );

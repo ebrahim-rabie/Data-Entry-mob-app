@@ -6,8 +6,11 @@ class DatabaseService {
 
   String get _userId => FirebaseAuth.instance.currentUser?.uid ?? '';
 
-  CollectionReference<Map<String, dynamic>> get _projects =>
-      _db.collection('users').doc(_userId).collection('projects');
+  CollectionReference<Map<String, dynamic>> get _projects {
+    final uid = _userId;
+    final safeUid = uid.isEmpty ? 'unauthenticated' : uid;
+    return _db.collection('users').doc(safeUid).collection('projects');
+  }
 
   Future<String> createProject(String fileName, List<SchemaColumn> columns) async {
     final doc = await _projects.add({
@@ -28,8 +31,12 @@ class DatabaseService {
     await _projects.doc(projectId).update(update);
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> watchProjects() =>
-      _projects.orderBy('updatedAt', descending: true).snapshots();
+  Stream<QuerySnapshot<Map<String, dynamic>>> watchProjects() {
+    if (_userId.isEmpty) {
+      return const Stream.empty();
+    }
+    return _projects.orderBy('updatedAt', descending: true).snapshots();
+  }
 
   Future<ProjectData?> getProject(String projectId) async {
     final doc = await _projects.doc(projectId).get();
@@ -38,17 +45,25 @@ class DatabaseService {
   }
 
   Future<void> deleteProject(String projectId) async {
-    final batch = _db.batch();
-    batch.delete(_projects.doc(projectId));
     final records = await _projects.doc(projectId).collection('records').get();
-    for (final r in records.docs) {
-      batch.delete(r.reference);
+    final docs = records.docs;
+    int index = 0;
+    while (index < docs.length) {
+      final batch = _db.batch();
+      final end = (index + 400 < docs.length) ? index + 400 : docs.length;
+      for (int i = index; i < end; i++) {
+        batch.delete(docs[i].reference);
+      }
+      await batch.commit();
+      index = end;
     }
-    await batch.commit();
+    await _projects.doc(projectId).delete();
   }
 
-  CollectionReference<Map<String, dynamic>> _recordsRef(String projectId) =>
-      _projects.doc(projectId).collection('records');
+  CollectionReference<Map<String, dynamic>> _recordsRef(String projectId) {
+    final safeProjectId = projectId.isEmpty ? 'invalid_project' : projectId;
+    return _projects.doc(safeProjectId).collection('records');
+  }
 
   Future<String> addRecord(String projectId, Map<String, dynamic> data) async {
     final doc = await _recordsRef(projectId).add(data);
@@ -71,8 +86,12 @@ class DatabaseService {
     await batch.commit();
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> watchRecords(String projectId) =>
-      _recordsRef(projectId).snapshots();
+  Stream<QuerySnapshot<Map<String, dynamic>>> watchRecords(String projectId) {
+    if (projectId.isEmpty || _userId.isEmpty) {
+      return const Stream.empty();
+    }
+    return _recordsRef(projectId).snapshots();
+  }
 
   Future<List<RecordData>> getAllRecords(String projectId) async {
     final snap = await _recordsRef(projectId).get();
@@ -83,6 +102,43 @@ class DatabaseService {
     final batch = _db.batch();
     for (final r in records) {
       batch.set(_recordsRef(projectId).doc(), r);
+    }
+    await batch.commit();
+  }
+
+  Stream<DocumentSnapshot<Map<String, dynamic>>> watchProject(String projectId) {
+    if (projectId.isEmpty || _userId.isEmpty) {
+      return const Stream.empty();
+    }
+    return _projects.doc(projectId).snapshots();
+  }
+
+  Future<void> renameColumnKey(String projectId, String oldName, String newName) async {
+    final records = await _recordsRef(projectId).get();
+    final batch = _db.batch();
+    for (final doc in records.docs) {
+      final data = doc.data();
+      if (data.containsKey(oldName)) {
+        final val = data[oldName];
+        batch.update(doc.reference, {
+          newName: val,
+          oldName: FieldValue.delete(),
+        });
+      }
+    }
+    await batch.commit();
+  }
+
+  Future<void> deleteColumnKey(String projectId, String columnName) async {
+    final records = await _recordsRef(projectId).get();
+    final batch = _db.batch();
+    for (final doc in records.docs) {
+      final data = doc.data();
+      if (data.containsKey(columnName)) {
+        batch.update(doc.reference, {
+          columnName: FieldValue.delete(),
+        });
+      }
     }
     await batch.commit();
   }
