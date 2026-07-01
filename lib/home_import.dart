@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'package:excel/excel.dart' hide Border;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_application_1/smart_schema.dart';
 
 class HomeImportScreen extends StatefulWidget {
   const HomeImportScreen({super.key});
@@ -63,6 +64,7 @@ class _HomeImportScreenState extends State<HomeImportScreen> {
         return map;
       }).toList();
       _inferColumnTypes(columns, dataRows);
+      _enrichColumns(columns, dataRows);
       if (context.mounted) {
         Navigator.pushNamed(context, SchemaRoute.schema, arguments: {
           'columns': columns,
@@ -147,6 +149,7 @@ class _HomeImportScreenState extends State<HomeImportScreen> {
       } else {
         _inferColumnTypes(columns, dataRows);
       }
+      _enrichColumns(columns, dataRows);
       final fileName = file.name.replaceAll('.xlsx', '');
       final projectId = await databaseService.createProject(fileName, columns);
       if (dataRows.isNotEmpty) {
@@ -227,6 +230,15 @@ class _HomeImportScreenState extends State<HomeImportScreen> {
     }
   }
 
+  void _enrichColumns(List<SchemaColumn> columns, List<Map<String, dynamic>> records) {
+    final knowledgeBase = KnowledgeBase.build(
+      columns: columns,
+      importedRecords: records,
+    );
+    for (var i = 0; i < columns.length; i++) {
+      columns[i] = SmartSchemaEngine.enrichColumn(columns[i], knowledgeBase);
+    }
+  }
   Future<void> _logOut(BuildContext context) async {
     await FirebaseAuth.instance.signOut();
     if (context.mounted) {
@@ -560,7 +572,7 @@ class _ProjectTile extends StatelessWidget {
                 children: [
                   Text(project.fileName, style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
                   const SizedBox(height: 2),
-                  Text('${project.columns.length} columns  •  Updated $formattedUpdateDate', style: GoogleFonts.inter(fontSize: 12, color: AppColors.textMuted)),
+                  Text('${project.columns.length} columns  -  Updated $formattedUpdateDate', style: GoogleFonts.inter(fontSize: 12, color: AppColors.textMuted)),
                 ],
               ),
             ),
