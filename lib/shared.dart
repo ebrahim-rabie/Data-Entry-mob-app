@@ -65,12 +65,16 @@ class SchemaColumn {
   ColumnType  type;
   bool        required;
   List<String> dropdownOptions;
+  String?     semanticKey;
+  String?     parentKey;
 
   SchemaColumn({
     required this.name,
     this.type     = ColumnType.text,
     this.required = true,
     this.dropdownOptions = const [],
+    this.semanticKey,
+    this.parentKey,
   });
 
   SchemaColumn copyWith({
@@ -78,11 +82,15 @@ class SchemaColumn {
     ColumnType?  type,
     bool?        required,
     List<String>? dropdownOptions,
+    String?      semanticKey,
+    String?      parentKey,
   }) => SchemaColumn(
     name:            name            ?? this.name,
     type:            type            ?? this.type,
     required:        required        ?? this.required,
     dropdownOptions: dropdownOptions ?? List.from(this.dropdownOptions),
+    semanticKey:     semanticKey     ?? this.semanticKey,
+    parentKey:       parentKey       ?? this.parentKey,
   );
 
   Map<String, dynamic> toJson() => {
@@ -90,6 +98,8 @@ class SchemaColumn {
     'type': type.name,
     'required': required,
     'dropdownOptions': dropdownOptions,
+    if (semanticKey != null) 'semanticKey': semanticKey,
+    if (parentKey != null) 'parentKey': parentKey,
   };
 
   factory SchemaColumn.fromJson(Map<String, dynamic> json) => SchemaColumn(
@@ -102,6 +112,8 @@ class SchemaColumn {
     dropdownOptions: (json['dropdownOptions'] as List<dynamic>?)
         ?.map((e) => e.toString())
         .toList() ?? [],
+    semanticKey: json['semanticKey'] as String?,
+    parentKey: json['parentKey'] as String?,
   );
 }
 

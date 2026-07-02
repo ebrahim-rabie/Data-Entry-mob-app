@@ -38,6 +38,11 @@ class DatabaseService {
     return _projects.orderBy('updatedAt', descending: true).snapshots();
   }
 
+  Future<List<ProjectData>> getAllProjects() async {
+    if (_userId.isEmpty) return const [];
+    final snap = await _projects.get();
+    return snap.docs.map((d) => ProjectData.fromSnapshot(d)).toList();
+  }
   Future<ProjectData?> getProject(String projectId) async {
     final doc = await _projects.doc(projectId).get();
     if (!doc.exists) return null;

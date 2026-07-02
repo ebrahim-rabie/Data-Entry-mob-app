@@ -11,6 +11,7 @@ import 'package:flutter_application_1/home_import.dart';
 import 'package:flutter_application_1/schema_add_rows.dart';
 import 'package:flutter_application_1/final_screen.dart';
 import 'package:flutter_application_1/onboarding.dart';
+import 'package:flutter_application_1/smart_schema.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -81,9 +82,9 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  AUTH GATE — listens to Firebase auth state
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// AUTH GATE - listens to Firebase auth state
+// -----------------------------------------------------------------------------
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -107,9 +108,9 @@ class AuthGate extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  SCREEN 1 — SCHEMA BUILDER
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// SCREEN 1 - SCHEMA BUILDER
+// -----------------------------------------------------------------------------
 
 class SchemaBuilderScreen extends StatefulWidget {
   final String? projectId;
@@ -133,6 +134,7 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
   late List<SchemaColumn> _columns;
   late List<Map<String, dynamic>> _importedRecords;
   late TextEditingController _fileNameCtrl;
+  late KnowledgeBase _knowledgeBase;
   bool _previewOpen = false;
   String? _projectId;
 
@@ -143,10 +145,18 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
     _fileNameCtrl = TextEditingController(
       text: widget.importedFileName ?? 'Untitled file',
     );
-    _columns = widget.importedColumns != null
-        ? List.from(widget.importedColumns!)
-        : [SchemaColumn(name: 'Column 1')];
     _importedRecords = widget.importedRecords ?? [];
+    final baseColumns = widget.importedColumns != null
+        ? List<SchemaColumn>.from(widget.importedColumns!)
+        : [SchemaColumn(name: '')];
+    _knowledgeBase = KnowledgeBase.build(
+      columns: baseColumns,
+      importedRecords: _importedRecords,
+    );
+    _columns = baseColumns
+        .map((column) => SmartSchemaEngine.enrichColumn(column, _knowledgeBase))
+        .toList();
+    _loadFirestoreKnowledge();
   }
 
   @override
@@ -155,10 +165,31 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
     super.dispose();
   }
 
+  Future<void> _loadFirestoreKnowledge() async {
+    try {
+      final projects = await databaseService.getAllProjects();
+      final recordsByProject = <String, List<RecordData>>{};
+      for (final project in projects) {
+        recordsByProject[project.id] = await databaseService.getAllRecords(project.id);
+      }
+      if (!mounted) return;
+      setState(() {
+        _knowledgeBase = KnowledgeBase.build(
+          columns: _columns,
+          importedRecords: _importedRecords,
+          firestoreProjects: projects,
+          firestoreRecordsByProject: recordsByProject,
+        );
+        _columns = _columns
+            .map((column) => SmartSchemaEngine.enrichColumn(column, _knowledgeBase))
+            .toList();
+      });
+    } catch (_) {
+      // Firestore knowledge is an enhancement; schema creation still works offline.
+    }
+  }
   void _addColumn() {
-    setState(() => _columns.add(
-      SchemaColumn(name: 'Column ${_columns.length + 1}'),
-    ));
+    setState(() => _columns.add(SchemaColumn(name: '')));
   }
 
   void _removeColumn(int index) {
@@ -167,7 +198,9 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
   }
 
   void _updateColumn(int index, SchemaColumn updated) {
-    setState(() => _columns[index] = updated);
+    setState(() {
+      _columns[index] = SmartSchemaEngine.enrichColumn(updated, _knowledgeBase);
+    });
   }
 
   void _reorder(int oldIndex, int newIndex) {
@@ -249,8 +282,8 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
           children: [
             _TopBar(
               breadcrumb: widget.importedFileName != null
-                  ? 'Import CSV → Define structure'
-                  : 'New file → Define structure',
+                  ? 'Import CSV -> Define structure'
+                  : 'New file -> Define structure',
               onBack: () => Navigator.pop(context),
               onPreview: isWide ? null : () => setState(() => _previewOpen = !_previewOpen),
               onSave: _saveAndEnter,
@@ -269,6 +302,7 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
                             onRemove: _removeColumn,
                             onUpdate: _updateColumn,
                             onReorder: _reorder,
+                            knowledgeBase: _knowledgeBase,
                           ),
                         ),
                         const VerticalDivider(width: 1, color: AppColors.border),
@@ -286,6 +320,7 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
                           onRemove: _removeColumn,
                           onUpdate: _updateColumn,
                           onReorder: _reorder,
+                          knowledgeBase: _knowledgeBase,
                         ),
             ),
           ],
@@ -297,7 +332,7 @@ class _SchemaBuilderScreenState extends State<SchemaBuilderScreen> {
   }
 }
 
-// ── Top bar ───────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 class _TopBar extends StatelessWidget {
   final String breadcrumb;
@@ -434,11 +469,12 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-// ── Left editor panel ─────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 class _EditorPanel extends StatelessWidget {
   final TextEditingController fileNameCtrl;
   final List<SchemaColumn>    columns;
+  final KnowledgeBase         knowledgeBase;
   final VoidCallback          onAdd;
   final void Function(int)    onRemove;
   final void Function(int, SchemaColumn) onUpdate;
@@ -447,6 +483,7 @@ class _EditorPanel extends StatelessWidget {
   const _EditorPanel({
     required this.fileNameCtrl,
     required this.columns,
+    required this.knowledgeBase,
     required this.onAdd,
     required this.onRemove,
     required this.onUpdate,
@@ -527,6 +564,7 @@ class _EditorPanel extends StatelessWidget {
               canDelete: columns.length > 1,
               onDelete: () => onRemove(i),
               onChanged: (updated) => onUpdate(i, updated),
+              knowledgeBase: knowledgeBase,
             ),
           ),
           const SizedBox(height: 8),
@@ -566,7 +604,7 @@ class _EditorPanel extends StatelessWidget {
   }
 }
 
-// ── Single column row ─────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 class _ColumnRow extends StatefulWidget {
   final int          index;
@@ -574,6 +612,7 @@ class _ColumnRow extends StatefulWidget {
   final bool         canDelete;
   final VoidCallback onDelete;
   final void Function(SchemaColumn) onChanged;
+  final KnowledgeBase knowledgeBase;
 
   const _ColumnRow({
     super.key,
@@ -582,6 +621,7 @@ class _ColumnRow extends StatefulWidget {
     required this.canDelete,
     required this.onDelete,
     required this.onChanged,
+    required this.knowledgeBase,
   });
 
   @override
@@ -689,10 +729,12 @@ class _ColumnRowState extends State<_ColumnRow> {
                     fontWeight: FontWeight.w500,
                     color: AppColors.textPrimary,
                   ),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     border: InputBorder.none,
                     isDense: true,
                     contentPadding: EdgeInsets.zero,
+                    hintText: 'Brand, Model, Fuel Type...',
+                    hintStyle: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 13),
                   ),
                 ),
               );
@@ -750,7 +792,8 @@ class _ColumnRowState extends State<_ColumnRow> {
             },
           ),
         ),
-        if (_showDropdownEditor)
+        _SmartColumnInsight(column: widget.column, knowledgeBase: widget.knowledgeBase),
+        if (_showDropdownEditor && widget.column.semanticKey == null)
           _DropdownOptionsEditor(
             options: widget.column.dropdownOptions,
             onChanged: (opts) =>
@@ -761,8 +804,68 @@ class _ColumnRowState extends State<_ColumnRow> {
   }
 }
 
-// ── Type selector dropdown ────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
+class _SmartColumnInsight extends StatelessWidget {
+  final SchemaColumn column;
+  final KnowledgeBase knowledgeBase;
+
+  const _SmartColumnInsight({
+    required this.column,
+    required this.knowledgeBase,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final semanticEntry = column.semanticKey != null
+        ? FieldRegistry.entries[column.semanticKey]
+        : SmartSchemaEngine.matchColumnName(column.name)?.entry;
+    final genericValues = knowledgeBase.genericValuesForColumnName(column.name);
+    final recognizedEntry = semanticEntry;
+    if (recognizedEntry == null && genericValues.isEmpty && column.name.trim().isEmpty) return const SizedBox.shrink();
+
+    final valueCount = recognizedEntry != null
+        ? knowledgeBase.valuesFor(recognizedEntry.key).length
+        : genericValues.length;
+    final isRecognized = recognizedEntry != null || genericValues.isNotEmpty;
+    final bg = isRecognized ? AppColors.infoBadgeLight : AppColors.warningLight;
+    final fg = isRecognized ? AppColors.infoBadge : AppColors.warning;
+    final title = recognizedEntry != null
+        ? 'Recognized as ${recognizedEntry.label}'
+        : 'Found ${valueCount} existing ${valueCount == 1 ? 'value' : 'values'} for this column';
+    final detail = recognizedEntry != null
+        ? '${recognizedEntry.widget == SmartInputKind.searchableDropdown ? 'Searchable dropdown' : recognizedEntry.columnType.label} - ${recognizedEntry.validator} - $valueCount known values${recognizedEntry.parentKey != null ? ' - depends on ${FieldRegistry.entries[recognizedEntry.parentKey]?.label ?? recognizedEntry.parentKey}' : ''}'
+        : 'Searchable autocomplete will suggest existing values.';
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(left: 26, bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: fg.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(isRecognized ? Icons.auto_awesome_rounded : Icons.tune_rounded, size: 16, color: fg),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
+                const SizedBox(height: 2),
+                Text(detail, style: GoogleFonts.inter(fontSize: 11, color: AppColors.textSecondary)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 class _TypeDropdownButton extends StatelessWidget {
   final ColumnType selected;
   final void Function(ColumnType) onSelect;
@@ -843,7 +946,7 @@ class _TypeDropdownButton extends StatelessWidget {
   }
 }
 
-// ── Dropdown options inline editor ────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 class _DropdownOptionsEditor extends StatefulWidget {
   final List<String>           options;
@@ -980,7 +1083,7 @@ class _DropdownOptionsEditorState extends State<_DropdownOptionsEditor> {
   }
 }
 
-// ── Right form-preview panel ──────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 class _FormPreviewPanel extends StatelessWidget {
   final List<SchemaColumn> columns;
@@ -1045,13 +1148,44 @@ class _FormPreviewPanel extends StatelessWidget {
   }
 }
 
-class _PreviewField extends StatelessWidget {
+class _PreviewField extends StatefulWidget {
   final SchemaColumn column;
 
   const _PreviewField({required this.column});
 
   @override
+  State<_PreviewField> createState() => _PreviewFieldState();
+}
+
+class _PreviewFieldState extends State<_PreviewField> {
+  String? _value;
+  bool _boolValue = false;
+  late TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void didUpdateWidget(_PreviewField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.column.name != widget.column.name || oldWidget.column.type != widget.column.type) {
+      _value = null;
+      _controller.clear();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final column = widget.column;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1070,107 +1204,175 @@ class _PreviewField extends StatelessWidget {
             ),
             if (column.required) ...[
               const SizedBox(width: 4),
-              const Text('*',
-                  style: TextStyle(
-                      color: AppColors.error,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600)),
+              const Text('*', style: TextStyle(color: AppColors.error, fontSize: 14, fontWeight: FontWeight.w600)),
             ] else ...[
               const SizedBox(width: 6),
-              Text(
-                'optional',
-                style: GoogleFonts.inter(
-                    fontSize: 12, color: AppColors.textMuted),
-              ),
+              Text('optional', style: GoogleFonts.inter(fontSize: 12, color: AppColors.textMuted)),
             ],
           ],
         ),
         const SizedBox(height: 6),
-        _previewWidget(column),
+        _inputWidget(column),
       ],
     );
   }
 
-  Widget _previewWidget(SchemaColumn col) {
-    final dummyDecoration = InputDecoration(
-      hintText: _hint(col),
-      hintStyle: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 14),
-      filled: true,
-      fillColor: AppColors.background,
-      enabled: false,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: AppColors.border),
-      ),
-      disabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: AppColors.border),
-      ),
-    );
+  InputDecoration _decoration(String hint) => InputDecoration(
+        hintText: hint,
+        hintStyle: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 14),
+        filled: true,
+        fillColor: AppColors.background,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+        ),
+      );
 
-    switch (col.type) {
-      case ColumnType.boolean:
-        return Row(
-          children: ['Yes', 'No'].map((opt) {
-            return Container(
-              margin: const EdgeInsets.only(right: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.border),
+  Widget _inputWidget(SchemaColumn column) {
+    switch (column.type) {
+      case ColumnType.dropdown:
+        final options = column.dropdownOptions.where((option) => option.trim().isNotEmpty).toList();
+        if (options.isEmpty) {
+          return TextFormField(
+            controller: _controller,
+            decoration: _decoration('No dropdown values yet'),
+            enabled: false,
+          );
+        }
+        return Autocomplete<String>(
+          initialValue: TextEditingValue(text: _value ?? ''),
+          optionsBuilder: (textEditingValue) {
+            final query = SmartSchemaEngine.normalize(textEditingValue.text);
+            final ranked = SmartSchemaEngine.rankedOptions(options, textEditingValue.text);
+            final filtered = ranked.where((option) {
+              return query.isEmpty || SmartSchemaEngine.normalize(option).contains(query);
+            }).take(30).toList();
+            final exactMatch = query.isNotEmpty && options.any((option) => SmartSchemaEngine.normalize(option) == query);
+            if (query.isNotEmpty && !exactMatch) {
+              filtered.insert(0, 'Create "${textEditingValue.text.trim()}"');
+            }
+            return filtered;
+          },
+          displayStringForOption: (option) {
+            if (option.startsWith('Create "') && option.endsWith('"')) {
+              return option.substring(8, option.length - 1);
+            }
+            return option;
+          },
+          onSelected: (selected) {
+            if (selected.startsWith('Create "') && selected.endsWith('"')) {
+              final created = selected.substring(8, selected.length - 1);
+              setState(() {
+                _value = created;
+                _controller.text = created;
+              });
+            } else {
+              setState(() {
+                _value = selected;
+                _controller.text = selected;
+              });
+            }
+          },
+          fieldViewBuilder: (context, textController, focusNode, onFieldSubmitted) {
+            return TextFormField(
+              controller: textController,
+              focusNode: focusNode,
+              readOnly: false,
+              decoration: _decoration('Search ${column.dropdownOptions.length} values').copyWith(
+                suffixIcon: const Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.textMuted),
               ),
-              child: Text(
-                opt,
-                style: GoogleFonts.inter(
-                    fontSize: 14, color: AppColors.textSecondary),
+              style: GoogleFonts.inter(fontSize: 14, color: AppColors.textPrimary),
+            );
+          },
+          optionsViewBuilder: (context, onSelected, options) {
+            return Align(
+              alignment: Alignment.topLeft,
+              child: Material(
+                elevation: 6,
+                borderRadius: BorderRadius.circular(8),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220, maxWidth: 360),
+                  child: ListView.builder(
+                    padding: EdgeInsets.zero,
+                    itemCount: options.length,
+                    itemBuilder: (context, index) {
+                      final option = options.elementAt(index);
+                      return ListTile(
+                        dense: true,
+                        title: Text(option, style: GoogleFonts.inter(fontSize: 13, color: AppColors.textPrimary)),
+                        onTap: () => onSelected(option),
+                      );
+                    },
+                  ),
+                ),
               ),
             );
-          }).toList(),
+          },
         );
 
-      case ColumnType.dropdown:
-        final opts = col.dropdownOptions.where((o) => o.isNotEmpty).toList();
-        if (opts.isEmpty) {
-          return TextFormField(enabled: false, decoration: dummyDecoration);
-        }
-        return Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: opts.map((opt) => Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.background,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Text(
-              opt,
-              style: GoogleFonts.inter(
-                  fontSize: 13, color: AppColors.textSecondary),
-            ),
-          )).toList(),
+      case ColumnType.boolean:
+        return SwitchListTile.adaptive(
+          value: _boolValue,
+          onChanged: (value) => setState(() => _boolValue = value),
+          dense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+          activeColor: AppColors.primary,
+          title: Text(_boolValue ? 'Yes' : 'No', style: GoogleFonts.inter(fontSize: 14, color: AppColors.textPrimary)),
+          tileColor: AppColors.background,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: const BorderSide(color: AppColors.border),
+          ),
         );
 
-      default:
-        return TextFormField(enabled: false, decoration: dummyDecoration);
-    }
-  }
+      case ColumnType.date:
+        return TextFormField(
+          controller: _controller,
+          readOnly: true,
+          onTap: () async {
+            final picked = await showDatePicker(
+              context: context,
+              initialDate: DateTime.now(),
+              firstDate: DateTime(1900),
+              lastDate: DateTime(2100),
+            );
+            if (picked != null) {
+              _controller.text = '${picked.day.toString().padLeft(2, '0')} / ${picked.month.toString().padLeft(2, '0')} / ${picked.year}';
+            }
+          },
+          decoration: _decoration('Pick a date').copyWith(
+            suffixIcon: const Icon(Icons.calendar_today_outlined, size: 16, color: AppColors.textMuted),
+          ),
+        );
 
-  String _hint(SchemaColumn col) {
-    switch (col.type) {
-      case ColumnType.number: return 'Enter number';
-      case ColumnType.date:   return 'DD / MM / YYYY';
-      case ColumnType.text:   return 'Enter text';
-      default:                return '';
+      case ColumnType.number:
+        return TextFormField(
+          controller: _controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[\d.]'))],
+          decoration: _decoration('Enter number'),
+        );
+
+      case ColumnType.text:
+        return TextFormField(
+          controller: _controller,
+          decoration: _decoration('Enter text'),
+        );
     }
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  SCREEN 2 — DATA ENTRY FORM (kept for reference / alternate entry)
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// SCREEN 2 - DATA ENTRY FORM (kept for reference / alternate entry)
+// -----------------------------------------------------------------------------
 
 class DataEntryScreen extends StatefulWidget {
   final String            fileName;
@@ -1247,7 +1449,7 @@ class _DataEntryScreenState extends State<DataEntryScreen> {
       _redoStack.clear();
     });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Record ${_recordCount - 1} saved ✓'),
+      content: Text('Record ${_recordCount - 1} saved'),
       backgroundColor: AppColors.success,
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -1375,7 +1577,7 @@ class _DataEntryScreenState extends State<DataEntryScreen> {
                             border: Border.all(color: AppColors.border),
                           ),
                           child: Text(
-                            'Record $_recordCount of ∞',
+                            'Record $_recordCount of unlimited',
                             style: GoogleFonts.inter(
                               fontSize: 12,
                               color: AppColors.textSecondary,
@@ -1459,7 +1661,7 @@ class _DataEntryScreenState extends State<DataEntryScreen> {
   }
 }
 
-// ── Individual entry field ────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 class _EntryField extends StatefulWidget {
   final SchemaColumn column;
@@ -1707,9 +1909,9 @@ class _EntryFieldState extends State<_EntryField> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 //  HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 class _SectionLabel extends StatelessWidget {
   final String text;
